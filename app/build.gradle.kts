@@ -16,12 +16,26 @@ android {
         versionName = "0.1"
     }
 
+    // Fixed release key, supplied by CI via env vars (see .github/workflows/build.yml).
+    // Without it, release builds fall back to the debug key, which cannot update an
+    // install that was signed with the release key.
+    val releaseKeystore = System.getenv("MINIHUB_KEYSTORE_FILE")?.let { file(it) }?.takeIf { it.exists() }
+    signingConfigs {
+        if (releaseKeystore != null) {
+            create("release") {
+                storeFile = releaseKeystore
+                storePassword = System.getenv("MINIHUB_KEYSTORE_PASSWORD")
+                keyAlias = "minihub"
+                keyPassword = System.getenv("MINIHUB_KEYSTORE_PASSWORD")
+            }
+        }
+    }
+
     buildTypes {
         release {
             isMinifyEnabled = true
             proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"))
-            // Personal sideload build: signed with the debug key so it installs directly.
-            signingConfig = signingConfigs.getByName("debug")
+            signingConfig = signingConfigs.findByName("release") ?: signingConfigs.getByName("debug")
         }
     }
     compileOptions {
