@@ -18,11 +18,26 @@ jobs:
             echo "::error::Secrets MINIHUB_KEYSTORE_BASE64 and MINIHUB_KEYSTORE_PASSWORD must be set (Settings > Secrets and variables > Actions)."
             exit 1
           fi
-          echo "$KEYSTORE_B64" | base64 -d > "$RUNNER_TEMP/release.jks"
+          # tr strips whitespace/line breaks that pasting can introduce
+          printf '%s' "$KEYSTORE_B64" | tr -d ' \r\n\t' | base64 -d > "$RUNNER_TEMP/release.jks"
+          echo "::notice::Keystore: $(stat -c %s "$RUNNER_TEMP/release.jks") bytes, sha256 $(sha256sum "$RUNNER_TEMP/release.jks" | cut -c1-16)"
+          if ! out=$(keytool -list -keystore "$RUNNER_TEMP/release.jks" -storepass "$KEYSTORE_PW" -alias minihub 2>&1); then
+            echo "::error::Keystore check failed: $(echo "$out" | grep -v JAVA_TOOL_OPTIONS | tail -3 | tr '\n' ' ')"
+            exit 1
+          fi
           echo "MINIHUB_KEYSTORE_FILE=$RUNNER_TEMP/release.jks" >> "$GITHUB_ENV"
-      - run: gradle :app:assembleRelease
+      - name: Build release APK
         env:
           MINIHUB_KEYSTORE_PASSWORD: ${{ secrets.MINIHUB_KEYSTORE_PASSWORD }}
+        run: |
+          set -o pipefail
+          if ! gradle :app:assembleRelease 2>&1 | tee "$RUNNER_TEMP/gradle.log"; then
+            # Surface the Gradle failure as annotations so it is readable without the raw log
+            # (one annotation, %0A = newline; GitHub caps the number of annotations per step)
+            msg=$(grep -E "^e: |error:|What went wrong" -A6 "$RUNNER_TEMP/gradle.log" | head -60 | sed ':a;N;$!ba;s/%/%25/g;s/\r//g;s/\n/%0A/g')
+            echo "::error::${msg:-Gradle failed, no error lines matched}"
+            exit 1
+          fi
       - name: Verify release signature
         run: |
           apksigner=$(ls "$ANDROID_HOME"/build-tools/*/apksigner | sort -V | tail -1)
