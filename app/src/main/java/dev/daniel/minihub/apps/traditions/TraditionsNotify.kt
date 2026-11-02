@@ -81,7 +81,7 @@ object TraditionsNotify {
 
     private fun openIntent(ctx: Context): PendingIntent = PendingIntent.getActivity(
         ctx, 2,
-        Intent(ctx, MainActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP),
+        Intent(ctx, MainActivity::class.java).putExtra(MainActivity.EXTRA_MINIAPP, TraditionsApp.id).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP),
         PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
     )
 
