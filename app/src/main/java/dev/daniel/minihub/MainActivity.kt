@@ -44,7 +44,14 @@ class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
-        setContent { MiniHubTheme { HubRoot() } }
+        val start = intent?.getStringExtra(EXTRA_MINIAPP)
+        Registry.apps.forEach { runCatching { it.onHubStart(applicationContext) } }
+        setContent { MiniHubTheme { HubRoot(start) } }
+    }
+
+    companion object {
+        /** Intent extra: id of a mini app to open directly (e.g. from a notification). */
+        const val EXTRA_MINIAPP = "miniapp"
     }
 }
 
@@ -61,13 +68,13 @@ fun MiniHubTheme(content: @Composable () -> Unit) {
 }
 
 @Composable
-private fun HubRoot() {
+private fun HubRoot(startAppId: String?) {
     val context = LocalContext.current
     val prefs = remember { context.getSharedPreferences("hub", Context.MODE_PRIVATE) }
     var launcherId by remember {
         mutableStateOf(prefs.getString("launcher", null) ?: Registry.launchers.first().id)
     }
-    var openAppId by rememberSaveable { mutableStateOf<String?>(null) }
+    var openAppId by rememberSaveable { mutableStateOf(startAppId) }
     val app = Registry.apps.firstOrNull { it.id == openAppId }
 
     Surface(Modifier.fillMaxSize()) {

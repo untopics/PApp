@@ -25,6 +25,9 @@ interface MiniApp {
      * Return null for metrics this app doesn't expose.
      */
     fun readMetric(store: JsonStore, metric: String, date: LocalDate): Int? = null
+
+    /** Called once when the hub activity is created (e.g. to schedule background work). */
+    fun onHubStart(context: Context) {}
 }
 
 /** A way of choosing a mini app (grid, ring, ...). */
