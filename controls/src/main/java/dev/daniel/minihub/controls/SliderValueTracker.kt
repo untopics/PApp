@@ -40,7 +40,13 @@ internal class SliderValueTracker(
             c == lo || c == hi || (c != null && lo != null && hi != null && c in lo..hi)
             )
         if (!keep) {
-            val next = valueAt(progress)
+            // Advance to the nearest value outside the band rather than jumping to the finger,
+            // so steps finer than the band are still shown one by one instead of skipped.
+            val next = when {
+                lo != null && (c == null || lo > c) -> lo
+                c != null && hi != null && hi < c -> hi
+                else -> valueAt(progress)
+            }
             if (history.isEmpty() || next != c) {
                 current = next
                 history.addLast(timeMs to next)
