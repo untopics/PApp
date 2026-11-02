@@ -15,7 +15,7 @@ One Android app, many tiny single-purpose mini apps. Kotlin + Jetpack Compose, n
 ```
 core/       MiniApp + Launcher interfaces, Registry, JsonStore, shared UI (StepRow, ChoiceRow, ArmedButton)
 launcher/   GridLauncher (cards), RingLauncher (hold → slide → release)
-apps/       calories/, sports/  — each fully self-contained
+apps/       calories/, sports/, traditions/  — each fully self-contained
 ```
 
 ### Add a mini app
@@ -38,3 +38,4 @@ Apps can expose read-only values by overriding `readMetric(store, metric, date)`
 - **Training plan:** a weekly template (Mon–Sun). Each edit stores a new plan version effective *today*; a day resolves to the newest version that started on or before it. So past days are frozen, and a change during the day becomes that day's plan.
 - **Reset all / Copy to all days:** tap twice within 3 s (no dialogs).
 - Exercises are defined in `apps/sports/SportsModel.kt` (`EXERCISES`). Don't rename ids of exercises that have data.
+- **Traditions:** Austrian family traditions, kindergarten and Burgenland school dates, regional holidays and birthdays. Calendar tab = every day as a row with its entries; Upcoming tab = next 365 days. Tap an entry for details, prep tasks and reminder dates. Built-in entries live in `apps/traditions/TraditionsCatalog.kt` (date rules: fixed, Easter offset, nth weekday, Advent, school calendar) — don't rename ids that have date overrides. Any built-in date can be changed for one year ("Change date"). "+" adds an entry by category (v1: Birthday = name + date of birth; reminders 4 weeks, 2 weeks, 3 days before and on the day). "All"/"Main" toggles optional entries. Notifications: one daily check around 08:00 posts that day's reminders.
