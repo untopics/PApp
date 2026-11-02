@@ -79,8 +79,8 @@ class CalorieRepo(private val store: JsonStore) {
 
 private enum class Range(val label: String, val days: Int) { WEEK("Week", 7), MONTH("Month", 30) }
 
-/** +/− slider scale: fine steps first, big meals at the far end. */
-private val KcalScale = ValueScale.piecewise(0f to 10f, 0.3f to 100f, 0.65f to 400f, 1f to 1500f)
+/** +/− slider scale: 25 → 400 over the first quarter, 400 → 2000 over the remaining three quarters. */
+private val KcalScale = ValueScale.piecewise(0f to 25f, 0.25f to 400f, 1f to 2000f)
 
 @Composable
 private fun CalorieScreen(repo: CalorieRepo, onBack: () -> Unit) {
@@ -150,7 +150,7 @@ private fun CalorieScreen(repo: CalorieRepo, onBack: () -> Unit) {
             ValueSlider(
                 text = "− kcal",
                 scale = KcalScale,
-                step = 10f,
+                step = 25f,
                 format = { "−${it.roundToInt()}" },
                 onRelease = { repo.add(today, -it.roundToInt()) },
                 color = MaterialTheme.colorScheme.secondaryContainer,
@@ -160,7 +160,7 @@ private fun CalorieScreen(repo: CalorieRepo, onBack: () -> Unit) {
             ValueSlider(
                 text = "+ kcal",
                 scale = KcalScale,
-                step = 10f,
+                step = 25f,
                 format = { "+${it.roundToInt()}" },
                 onRelease = { repo.add(today, it.roundToInt()) },
                 modifier = Modifier.weight(1f).height(72.dp),
