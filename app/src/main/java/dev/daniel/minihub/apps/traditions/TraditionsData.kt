@@ -1,0 +1,108 @@
+package dev.daniel.minihub.apps.traditions
+
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateListOf
+import androidx.compose.runtime.mutableStateMapOf
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.setValue
+import dev.daniel.minihub.core.JsonStore
+import org.json.JSONArray
+import org.json.JSONObject
+import java.time.LocalDate
+import java.util.UUID
+
+/**
+ * File format (traditions.json):
+ * {
+ *   "showOptional": true,
+ *   "overrides": { "kg-nikolo@2026": "2026-12-07" },        // built-in id @ year -> date
+ *   "entries": [ { "id": "...", "category": "birthday", "name": "Anna", "date": "2020-05-04", ... } ]
+ * }
+ * Unknown keys on an entry are kept, so later per-category fields (e.g. presents per year) survive edits.
+ */
+data class TraditionsSnapshot(
+    val showOptional: Boolean,
+    val overrides: Map<String, LocalDate>,
+    val entries: List<UserEntry>,
+) {
+    fun planner() = Planner(CATALOG, entries, overrides, showOptional)
+}
+
+object TraditionsData {
+    private val KNOWN = setOf("id", "category", "name", "date")
+
+    fun load(store: JsonStore): TraditionsSnapshot {
+        val root = store.read()
+        val overrides = HashMap<String, LocalDate>()
+        root.optJSONObject("overrides")?.let { o ->
+            o.keys().forEach { k -> runCatching { overrides[k] = LocalDate.parse(o.getString(k)) } }
+        }
+        val entries = ArrayList<UserEntry>()
+        root.optJSONArray("entries")?.let { arr ->
+            for (i in 0 until arr.length()) {
+                val o = arr.optJSONObject(i) ?: continue
+                val cat = Category.byId(o.optString("category")) ?: continue
+                val date = runCatching { LocalDate.parse(o.getString("date")) }.getOrNull() ?: continue
+                val extra = JSONObject()
+                o.keys().forEach { k -> if (k !in KNOWN) extra.put(k, o.get(k)) }
+                entries += UserEntry(o.optString("id"), cat, o.optString("name"), date, extra.toString())
+            }
+        }
+        return TraditionsSnapshot(root.optBoolean("showOptional", true), overrides, entries)
+    }
+
+    fun save(store: JsonStore, s: TraditionsSnapshot) {
+        val root = store.read() // keep keys this version doesn't know about
+        root.put("showOptional", s.showOptional)
+        root.put("overrides", JSONObject().apply { s.overrides.forEach { (k, v) -> put(k, v.toString()) } })
+        root.put("entries", JSONArray().apply {
+            for (e in s.entries) {
+                val o = runCatching { JSONObject(e.extraJson) }.getOrDefault(JSONObject())
+                o.put("id", e.id).put("category", e.category.id).put("name", e.name).put("date", e.date.toString())
+                put(o)
+            }
+        })
+        store.write(root)
+    }
+}
+
+/** Compose-observable state on top of [TraditionsData]. */
+class TraditionsRepo(private val store: JsonStore) {
+    var showOptional by mutableStateOf(true)
+        private set
+    val overrides = mutableStateMapOf<String, LocalDate>()
+    val entries = mutableStateListOf<UserEntry>()
+
+    init {
+        val s = TraditionsData.load(store)
+        showOptional = s.showOptional
+        overrides.putAll(s.overrides)
+        entries.addAll(s.entries)
+    }
+
+    fun snapshot() = TraditionsSnapshot(showOptional, overrides.toMap(), entries.toList())
+
+    fun toggleOptional() {
+        showOptional = !showOptional
+        save()
+    }
+
+    fun setOverride(key: String, date: LocalDate?) {
+        if (date == null) overrides.remove(key) else overrides[key] = date
+        save()
+    }
+
+    fun upsert(id: String?, category: Category, name: String, date: LocalDate) {
+        val i = entries.indexOfFirst { it.id == id }
+        if (i >= 0) entries[i] = entries[i].copy(category = category, name = name.trim(), date = date)
+        else entries += UserEntry(UUID.randomUUID().toString(), category, name.trim(), date)
+        save()
+    }
+
+    fun delete(id: String) {
+        entries.removeAll { it.id == id }
+        save()
+    }
+
+    private fun save() = TraditionsData.save(store, snapshot())
+}
