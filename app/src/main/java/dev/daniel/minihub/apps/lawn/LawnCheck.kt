@@ -74,7 +74,9 @@ object LawnCheck {
      * On hub start: one fetch as soon as there is network, plus a periodic check every ~6 h
      * while any notifications are enabled.
      */
-    fun schedule(context: Context) {
+    fun schedule(context: Context) = runCatching { scheduleUnsafe(context) }
+
+    private fun scheduleUnsafe(context: Context) {
         val js = context.getSystemService(JobScheduler::class.java) ?: return
         val component = ComponentName(context, LawnJobService::class.java)
         js.schedule(
@@ -94,13 +96,18 @@ object LawnCheck {
             return
         }
         if (existing != null) return
-        js.schedule(
-            JobInfo.Builder(JOB_PERIODIC, ComponentName(context, LawnJobService::class.java))
-                .setRequiredNetworkType(JobInfo.NETWORK_TYPE_ANY)
-                .setPeriodic(6 * 60 * 60 * 1000L, 60 * 60 * 1000L)
-                .setPersisted(true)
-                .build()
-        )
+        fun job(persisted: Boolean) = JobInfo.Builder(JOB_PERIODIC, ComponentName(context, LawnJobService::class.java))
+            .setRequiredNetworkType(JobInfo.NETWORK_TYPE_ANY)
+            .setPeriodic(6 * 60 * 60 * 1000L, 60 * 60 * 1000L)
+            .setPersisted(persisted)
+            .build()
+        // Persisting (survive reboot) can be refused by the system, e.g. right after an update that
+        // added RECEIVE_BOOT_COMPLETED. Fall back to a non-persisted job; hub start re-schedules it.
+        try {
+            js.schedule(job(persisted = true))
+        } catch (e: IllegalArgumentException) {
+            js.schedule(job(persisted = false))
+        }
     }
 }
 

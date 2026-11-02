@@ -8,6 +8,10 @@ import androidx.activity.compose.BackHandler
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.compose.foundation.isSystemInDarkTheme
+import androidx.compose.ui.text.AnnotatedString
+import androidx.compose.ui.platform.LocalClipboardManager
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -37,12 +41,14 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import dev.daniel.minihub.core.AppContext
+import dev.daniel.minihub.core.CrashLog
 import dev.daniel.minihub.core.JsonStore
 import dev.daniel.minihub.core.Registry
 
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        CrashLog.install(this)
         enableEdgeToEdge()
         val start = intent?.getStringExtra(EXTRA_MINIAPP)
         Registry.apps.forEach { runCatching { it.onHubStart(applicationContext) } }
@@ -104,9 +110,36 @@ private fun HubRoot(startAppId: String?) {
                             }
                         }
                     }
+                    CrashBanner()
                     launcher.Content(Registry.apps, { openAppId = it.id }, Modifier.weight(1f))
                 }
             }
+        }
+    }
+}
+
+/** Shows the last crash (if any) on the home screen: copy the trace, then dismiss. */
+@Composable
+private fun CrashBanner() {
+    val context = LocalContext.current
+    var trace by remember { mutableStateOf(CrashLog.read(context)) }
+    val text = trace ?: return
+    val clipboard = LocalClipboardManager.current
+    Column(
+        Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 4.dp)
+            .background(MaterialTheme.colorScheme.errorContainer, RoundedCornerShape(12.dp))
+            .padding(12.dp),
+    ) {
+        Text("Last crash", style = MaterialTheme.typography.titleSmall, color = MaterialTheme.colorScheme.onErrorContainer)
+        Text(
+            text.lines().drop(1).take(3).joinToString("\n"),
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onErrorContainer,
+            maxLines = 4,
+        )
+        Row {
+            TextButton(onClick = { clipboard.setText(AnnotatedString(text)) }) { Text("Copy") }
+            TextButton(onClick = { CrashLog.clear(context); trace = null }) { Text("Dismiss") }
         }
     }
 }

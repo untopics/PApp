@@ -71,7 +71,9 @@ object LawnApp : MiniApp {
     override val icon = "🌱"
     override val accent = Color(0xFF66BB6A)
 
-    override fun onHubStart(context: Context) = LawnCheck.schedule(context)
+    override fun onHubStart(context: Context) {
+        LawnCheck.schedule(context)
+    }
 
     @Composable
     override fun Content(ctx: AppContext) = LawnScreen(ctx)
@@ -123,10 +125,13 @@ private fun LawnScreen(ctx: AppContext) {
     fun toggleNotify(s: Stage) {
         val adding = s !in data.notify
         edit { it.copy(notify = if (adding) it.notify + s else it.notify - s) }
-        LawnCheck.updatePeriodic(ctx.context)
-        if (adding && !LawnCheck.canNotify(ctx.context) && Build.VERSION.SDK_INT >= 33) {
-            permission.launch(Manifest.permission.POST_NOTIFICATIONS)
-        } else if (adding) refresh()
+        // Background scheduling must never take the UI down; worst case the check runs on next start.
+        runCatching { LawnCheck.updatePeriodic(ctx.context) }
+            .onFailure { error = "background check not scheduled (${it.javaClass.simpleName})" }
+        if (!adding) return
+        if (!LawnCheck.canNotify(ctx.context) && Build.VERSION.SDK_INT >= 33) {
+            runCatching { permission.launch(Manifest.permission.POST_NOTIFICATIONS) }
+        } else refresh()
     }
 
     val stage = data.view
