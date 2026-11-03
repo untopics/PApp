@@ -10,6 +10,7 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
@@ -26,10 +27,12 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import dev.daniel.minihub.controls.SliderMode
 import dev.daniel.minihub.controls.ValueScale
 import dev.daniel.minihub.controls.ValueSlider
 import dev.daniel.minihub.core.AppContext
@@ -66,6 +69,7 @@ object CalorieApp : MiniApp {
 
 class CalorieRepo(private val store: JsonStore) {
     private val days = mutableStateMapOf<LocalDate, Int>()
+    private val weights = mutableStateMapOf<LocalDate, Float>()
 
     /** Daily limit (chart line + "left/over"); null = none. */
     var limit by mutableStateOf<Int?>(null)
@@ -76,6 +80,18 @@ class CalorieRepo(private val store: JsonStore) {
         val obj = root.optJSONObject("days")
         obj?.keys()?.forEach { k -> runCatching { days[LocalDate.parse(k)] = obj.getInt(k) } }
         limit = root.optInt("limit", 0).takeIf { it > 0 }
+        val w = root.optJSONObject("weights")
+        w?.keys()?.forEach { k -> runCatching { weights[LocalDate.parse(k)] = w.getDouble(k).toFloat() } }
+    }
+
+    /** Latest logged weight on or before [date] and the day it was logged; null = never logged. */
+    fun currentWeight(date: LocalDate): Pair<LocalDate, Float>? =
+        weights.entries.filter { !it.key.isAfter(date) }.maxByOrNull { it.key }?.let { it.key to it.value }
+
+    /** Logs [kg] for [date] (one value per day, a new one replaces it). */
+    fun setWeight(date: LocalDate, kg: Float) {
+        weights[date] = (kg * 10).roundToInt() / 10f
+        save()
     }
 
     fun get(date: LocalDate): Int = days[date] ?: 0
@@ -98,6 +114,11 @@ class CalorieRepo(private val store: JsonStore) {
         days.forEach { (k, value) -> d.put(k.toString(), value) }
         val root = JSONObject().put("days", d)
         limit?.let { root.put("limit", it) }
+        if (weights.isNotEmpty()) {
+            val w = JSONObject()
+            weights.forEach { (k, v) -> w.put(k.toString(), v.toDouble()) }
+            root.put("weights", w)
+        }
         store.write(root)
     }
 }
@@ -132,6 +153,9 @@ private val MonthYear = DateTimeFormatter.ofPattern("MMMM yyyy", Locale.getDefau
 
 /** +/− slider scale: 25 → 400 over the first quarter, 400 → 2000 over the remaining three quarters. */
 private val KcalScale = ValueScale.piecewise(0f to 25f, 0.25f to 400f, 1f to 2000f)
+
+/** Weight slider: ±1 kg linear each way from the current weight, committed in 0.1 kg steps. */
+private val WeightScale = ValueScale.linear(0f, 1f)
 
 @Composable
 private fun CalorieScreen(repo: CalorieRepo, onBack: () -> Unit) {
@@ -190,27 +214,33 @@ private fun CalorieScreen(repo: CalorieRepo, onBack: () -> Unit) {
 
         // --- Controls (bottom) ---
         Spacer(Modifier.height(16.dp))
-        Text(
-            "$value",
-            fontSize = 56.sp,
-            fontWeight = FontWeight.Bold,
-            textAlign = TextAlign.Center,
-            modifier = Modifier.fillMaxWidth(),
-            color = if (limit != null && value > limit) Color(0xFFE53935) else MaterialTheme.colorScheme.onSurface,
-        )
-        val sub = buildString {
-            append("kcal · ").append(today.format(fmt))
-            if (limit != null) {
-                val left = limit - value
-                append(" · ").append(if (left >= 0) "$left left" else "${-left} over")
+        Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+            Column(Modifier.weight(1f)) {
+                Text(
+                    "$value",
+                    fontSize = 56.sp,
+                    fontWeight = FontWeight.Bold,
+                    textAlign = TextAlign.Center,
+                    modifier = Modifier.fillMaxWidth(),
+                    color = if (limit != null && value > limit) Color(0xFFE53935) else MaterialTheme.colorScheme.onSurface,
+                )
+                val sub = buildString {
+                    append("kcal · ").append(today.format(fmt))
+                    if (limit != null) {
+                        val left = limit - value
+                        append(" · ").append(if (left >= 0) "$left left" else "${-left} over")
+                    }
+                }
+                Text(
+                    sub,
+                    textAlign = TextAlign.Center,
+                    modifier = Modifier.fillMaxWidth(),
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
             }
+            Spacer(Modifier.width(12.dp))
+            WeightControl(repo, today, Modifier.width(120.dp))
         }
-        Text(
-            sub,
-            textAlign = TextAlign.Center,
-            modifier = Modifier.fillMaxWidth(),
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-        )
         Spacer(Modifier.height(16.dp))
         Row(
             Modifier.fillMaxWidth().padding(bottom = 16.dp),
@@ -237,3 +267,55 @@ private fun CalorieScreen(repo: CalorieRepo, onBack: () -> Unit) {
         }
     }
 }
+
+/**
+ * Weight for today: a bidirectional slider that always starts at the latest logged weight
+ * (±1 kg, 0.1 kg steps). Before the first entry it's a number field instead.
+ */
+@Composable
+private fun WeightControl(repo: CalorieRepo, today: LocalDate, modifier: Modifier = Modifier) {
+    val current = repo.currentWeight(today)
+    Column(modifier, horizontalAlignment = Alignment.CenterHorizontally) {
+        if (current == null) {
+            var text by remember { mutableStateOf("") }
+            fun commit() {
+                text.replace(',', '.').toFloatOrNull()?.takeIf { it in 20f..400f }?.let { repo.setWeight(today, it) }
+            }
+            OutlinedTextField(
+                value = text,
+                onValueChange = { s -> text = s.filter { it.isDigit() || it == '.' || it == ',' }.take(5) },
+                label = { Text("Weight kg") },
+                singleLine = true,
+                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal, imeAction = ImeAction.Done),
+                keyboardActions = KeyboardActions(onDone = { commit() }),
+                modifier = Modifier.fillMaxWidth(),
+            )
+        } else {
+            WeightSlider(repo, today, current.first, current.second)
+        }
+    }
+}
+
+@Composable
+private fun WeightSlider(repo: CalorieRepo, today: LocalDate, date: LocalDate, kg: Float) {
+    Column(horizontalAlignment = Alignment.CenterHorizontally) {
+        Text(
+            if (date == today) "kg · today" else "kg · ${date.format(ShortDate)}",
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+        Spacer(Modifier.height(4.dp))
+        ValueSlider(
+            text = "%.1f".format(kg),
+            scale = WeightScale,
+            step = 0.1f,
+            mode = SliderMode.Bidirectional(start = kg),
+            onRelease = { repo.setWeight(today, it) },
+            color = MaterialTheme.colorScheme.tertiaryContainer,
+            contentColor = MaterialTheme.colorScheme.onTertiaryContainer,
+            modifier = Modifier.fillMaxWidth().height(64.dp),
+        )
+    }
+}
+
+private val ShortDate = DateTimeFormatter.ofPattern("d MMM", Locale.getDefault())

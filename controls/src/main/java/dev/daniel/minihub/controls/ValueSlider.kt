@@ -49,21 +49,44 @@ import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.Popup
 import androidx.compose.ui.window.PopupPositionProvider
 import androidx.compose.ui.window.PopupProperties
+import kotlin.math.abs
 import kotlin.math.roundToInt
 
 enum class SliderDirection { Auto, Up, Down }
 
+/** How finger position maps to a value. */
+sealed interface SliderMode {
+    /** Track pops out to one side; further out = higher value ([ValueScale] from 0 to 1). */
+    data object Normal : SliderMode
+
+    /**
+     * Opt-in: the track extends both up and down from the button, starting at [start].
+     * Sliding up adds `scale(progress)`, sliding down subtracts `downScale(progress)`
+     * (defaults to the same scale), so scales should start at 0 here.
+     *
+     * Each half is `trackLength / 2` long, or up to the screen edge if there is less room.
+     * Each half always covers its full range, so with uneven room the two sides differ in
+     * sensitivity: placing the control near the middle of the screen is the caller's job.
+     * Finger over the button = cancel, as in [Normal].
+     */
+    data class Bidirectional(val start: Float, val downScale: ValueScale? = null) : SliderMode
+}
+
 /**
  * A rounded button that turns into a slider while held.
  *
- * Press it and a track pops out (up or down, whichever side has more room with [SliderDirection.Auto]).
- * Without lifting, slide along the track: the further out, the higher the value ([scale] decides
- * range and growth). Lift to commit: [onRelease] gets the value that was on screen.
- * Lifting while still over the button cancels ([onCancel]).
+ * Press it and a track pops out (up or down, whichever side has more room with [SliderDirection.Auto];
+ * both ways with [SliderMode.Bidirectional]). Without lifting, slide along the track: [scale] decides
+ * range and growth. The value follows the finger at [displayStep] resolution; lifting commits it
+ * rounded to [step] ([onRelease]). Lifting while still over the button cancels ([onCancel]).
  *
  * @param text label shown on the button when idle
- * @param step values are rounded to multiples of this (0 = no rounding)
- * @param format how a value is displayed
+ * @param step committed values are rounded to multiples of this (0 = no rounding)
+ * @param displayStep resolution of the value shown while sliding (default: one decimal finer than [step])
+ * @param format how a shown (fine) value is displayed
+ * @param direction side the track opens to in [SliderMode.Normal]; ignored for bidirectional
+ * @param trackLength total track length (both halves together in bidirectional mode)
+ * @param releaseGraceMs the value on screen this long before the lift is committed (absorbs finger roll)
  */
 @Composable
 fun ValueSlider(
@@ -72,13 +95,14 @@ fun ValueSlider(
     onRelease: (Float) -> Unit,
     modifier: Modifier = Modifier,
     step: Float = 1f,
-    format: (Float) -> String = { v -> if (step >= 1f) v.roundToInt().toString() else "%.1f".format(v) },
+    displayStep: Float = SliderValueTracker.defaultDisplayStep(step),
+    format: (Float) -> String = defaultFormat(displayStep),
     onCancel: () -> Unit = {},
+    mode: SliderMode = SliderMode.Normal,
     direction: SliderDirection = SliderDirection.Auto,
     color: Color = MaterialTheme.colorScheme.primary,
     contentColor: Color = MaterialTheme.colorScheme.onPrimary,
     trackLength: Dp = 360.dp,
-    hysteresis: Dp = 8.dp,
     releaseGraceMs: Long = 80,
     haptics: Boolean = true,
     enabled: Boolean = true,
@@ -89,10 +113,11 @@ fun ValueSlider(
     val insets = WindowInsets.safeDrawing
     val shape = RoundedCornerShape(16.dp)
 
-    val cur = rememberUpdatedState(Params(scale, step, onRelease, onCancel, direction, haptics))
+    val cur = rememberUpdatedState(Params(scale, step, displayStep, mode, onRelease, onCancel, direction, haptics))
     var bounds by remember { mutableStateOf(Rect.Zero) }
     var session by remember { mutableStateOf<Session?>(null) }
-    var progress by remember { mutableFloatStateOf(0f) }
+    // Signed track position: > 0 up side, < 0 down side (fraction of that half), null = over the button.
+    var position by remember { mutableStateOf<Float?>(null) }
     var shown by remember { mutableStateOf<Float?>(null) }
 
     val active = session != null
@@ -101,33 +126,60 @@ fun ValueSlider(
             .clip(shape)
             .background(if (enabled) color else color.copy(alpha = 0.38f))
             .onGloballyPositioned { bounds = it.boundsInWindow() }
-            .pointerInput(enabled, trackLength, hysteresis, releaseGraceMs) {
+            .pointerInput(enabled, trackLength, releaseGraceMs) {
                 if (!enabled) return@pointerInput
                 awaitEachGesture {
                     val down = awaitFirstDown(requireUnconsumed = false)
                     down.consume()
                     val p = cur.value
                     val margin = 8.dp.toPx()
+                    val minLen = 48.dp.toPx()
                     val spaceUp = bounds.top - insets.getTop(this) - margin
                     val spaceDown = view.rootView.height - insets.getBottom(this) - bounds.bottom - margin
-                    val up = when (p.direction) {
-                        SliderDirection.Up -> true
-                        SliderDirection.Down -> false
-                        SliderDirection.Auto -> spaceUp >= spaceDown
+                    val upLen: Float
+                    val downLen: Float
+                    when (p.mode) {
+                        is SliderMode.Bidirectional -> {
+                            val half = trackLength.toPx() / 2f
+                            upLen = half.coerceAtMost(spaceUp).coerceAtLeast(minLen)
+                            downLen = half.coerceAtMost(spaceDown).coerceAtLeast(minLen)
+                        }
+                        SliderMode.Normal -> {
+                            val up = when (p.direction) {
+                                SliderDirection.Up -> true
+                                SliderDirection.Down -> false
+                                SliderDirection.Auto -> spaceUp >= spaceDown
+                            }
+                            val len = trackLength.toPx().coerceAtMost(if (up) spaceUp else spaceDown).coerceAtLeast(minLen)
+                            upLen = if (up) len else 0f
+                            downLen = if (up) 0f else len
+                        }
                     }
-                    val room = if (up) spaceUp else spaceDown
-                    val length = trackLength.toPx().coerceAtMost(room).coerceAtLeast(48.dp.toPx())
-                    // Distance from finger to the button edge the track grows from:
-                    // the value starts once the finger leaves the button.
-                    val edge = if (up) down.position.y else size.height - down.position.y
+                    val h = size.height.toFloat()
                     val labelRight = bounds.center.x < view.rootView.width / 2f
-                    val tracker = SliderValueTracker(p.scale, p.step, hysteresis.toPx() / length, releaseGraceMs)
+                    val tracker = SliderValueTracker(p.step, p.displayStep, releaseGraceMs)
 
-                    fun progressOf(y: Float) = ((if (up) down.position.y - y else y - down.position.y) - edge) / length
+                    // y is relative to the button: the value starts once the finger leaves it.
+                    fun positionOf(y: Float): Float? = when {
+                        y < 0f && upLen > 0f -> -y / upLen
+                        y > h && downLen > 0f -> -(y - h) / downLen
+                        else -> null
+                    }
 
-                    progress = progressOf(down.position.y)
-                    shown = tracker.update(progress, down.uptimeMillis)
-                    session = Session(up, length, labelRight)
+                    fun valueOf(pos: Float?): Float? {
+                        pos ?: return null
+                        return when (val m = p.mode) {
+                            SliderMode.Normal -> p.scale.valueAt(abs(pos).coerceAtMost(1f))
+                            is SliderMode.Bidirectional ->
+                                if (pos >= 0f) m.start + p.scale.valueAt(pos.coerceAtMost(1f))
+                                else m.start - (m.downScale ?: p.scale).valueAt((-pos).coerceAtMost(1f))
+                        }
+                    }
+
+                    position = positionOf(down.position.y)
+                    tracker.update(valueOf(position), down.uptimeMillis)
+                    shown = tracker.shown
+                    session = Session(upLen, downLen, h, labelRight, p.mode is SliderMode.Bidirectional)
                     try {
                         while (true) {
                             val event = awaitPointerEvent()
@@ -142,15 +194,18 @@ fun ValueSlider(
                                 break
                             }
                             change.consume()
-                            progress = progressOf(change.position.y)
-                            val before = shown
-                            shown = tracker.update(progress, change.uptimeMillis)
-                            if (shown != before && cur.value.haptics) {
+                            position = positionOf(change.position.y)
+                            val before = tracker.committed
+                            tracker.update(valueOf(position), change.uptimeMillis)
+                            shown = tracker.shown
+                            // Tick only when the committed (step) value changes, not on every fine value.
+                            if (tracker.committed != before && cur.value.haptics) {
                                 haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
                             }
                         }
                     } finally {
                         session = null
+                        position = null
                         shown = null
                     }
                 }
@@ -168,7 +223,7 @@ fun ValueSlider(
         session?.let { s ->
             SliderPopup(
                 session = s,
-                progress = progress.coerceIn(0f, 1f),
+                position = position,
                 label = v?.let(format) ?: "✕",
                 trackWidth = with(density) { bounds.width.toDp() },
                 color = color,
@@ -176,29 +231,42 @@ fun ValueSlider(
             )
         }
     }
-
 }
 
+private fun defaultFormat(displayStep: Float): (Float) -> String {
+    val decimals = SliderValueTracker.decimalsFor(displayStep)
+    return { v -> "%.${decimals}f".format(v) }
+}
+
+/** Track halves in px; the popup spans up-half + button + down-half (a missing half has length 0). */
 @Immutable
-private data class Session(val up: Boolean, val lengthPx: Float, val labelRight: Boolean)
+private data class Session(
+    val upPx: Float,
+    val downPx: Float,
+    val buttonPx: Float,
+    val labelRight: Boolean,
+    val bidirectional: Boolean,
+)
 
 private class Params(
     val scale: ValueScale,
     val step: Float,
+    val displayStep: Float,
+    val mode: SliderMode,
     val onRelease: (Float) -> Unit,
     val onCancel: () -> Unit,
     val direction: SliderDirection,
     val haptics: Boolean,
 )
 
-private val LabelWidth = 96.dp
+private val LabelWidth = 104.dp
 private val LabelHeight = 44.dp
 private val LabelGap = 8.dp
 
 @Composable
 private fun SliderPopup(
     session: Session,
-    progress: Float,
+    position: Float?,
     label: String,
     trackWidth: Dp,
     color: Color,
@@ -206,15 +274,27 @@ private fun SliderPopup(
 ) {
     val density = LocalDensity.current
     val trackBg = MaterialTheme.colorScheme.surfaceVariant
-    val lengthDp = with(density) { session.lengthPx.toDp() }
+    val totalPx = session.upPx + session.buttonPx + session.downPx
+    val totalDp = with(density) { totalPx.toDp() }
     val provider = remember(session) { SliderPositionProvider(session) }
+    val upFill = position?.takeIf { it > 0f }?.coerceAtMost(1f) ?: 0f
+    val downFill = position?.takeIf { it < 0f }?.let { (-it).coerceAtMost(1f) } ?: 0f
+    val downTop = session.upPx + session.buttonPx
+    // Thumb (and label) position in popup px; over the button = button center.
+    val thumbPx = when {
+        upFill > 0f -> session.upPx * (1f - upFill)
+        downFill > 0f -> downTop + session.downPx * downFill
+        !session.bidirectional && session.upPx > 0f -> session.upPx
+        !session.bidirectional -> downTop
+        else -> session.upPx + session.buttonPx / 2f
+    }
 
     Popup(popupPositionProvider = provider, properties = PopupProperties(focusable = false)) {
-        Row(Modifier.height(lengthDp)) {
+        Row(Modifier.height(totalDp)) {
             val labelBox = @Composable {
                 // Value bubble beside the track, level with the finger so it stays readable.
-                val thumbY = if (session.up) lengthDp * (1f - progress) else lengthDp * progress
-                val y = (thumbY - LabelHeight / 2).coerceIn(0.dp, (lengthDp - LabelHeight).coerceAtLeast(0.dp))
+                val thumbDp = with(density) { thumbPx.toDp() }
+                val y = (thumbDp - LabelHeight / 2).coerceIn(0.dp, (totalDp - LabelHeight).coerceAtLeast(0.dp))
                 Box(Modifier.width(LabelWidth + LabelGap).fillMaxHeight()) {
                     Box(
                         Modifier
@@ -230,31 +310,37 @@ private fun SliderPopup(
                             color = MaterialTheme.colorScheme.inverseOnSurface,
                             fontSize = 22.sp,
                             fontWeight = FontWeight.Bold,
+                            maxLines = 1,
                         )
                     }
                 }
             }
             if (!session.labelRight) labelBox()
+            // The button area in the middle stays transparent, so the button remains visible.
             Canvas(Modifier.width(trackWidth).fillMaxHeight()) {
                 val r = CornerRadius(16.dp.toPx())
-                drawRoundRect(trackBg, cornerRadius = r)
-                val filled = size.height * progress
-                val top = if (session.up) size.height - filled else 0f
-                if (filled > 0f) drawRoundRect(color, Offset(0f, top), Size(size.width, filled), r)
-                val thumbY = if (session.up) top else filled
-                drawLine(
-                    contentColor,
-                    Offset(size.width * 0.2f, thumbY),
-                    Offset(size.width * 0.8f, thumbY),
-                    strokeWidth = 4.dp.toPx(),
-                )
+                val w = size.width
+                val stroke = 4.dp.toPx()
+                fun thumb(y: Float) = drawLine(contentColor, Offset(w * 0.2f, y), Offset(w * 0.8f, y), strokeWidth = stroke)
+                if (session.upPx > 0f) {
+                    drawRoundRect(trackBg, Offset.Zero, Size(w, session.upPx), r)
+                    val filled = session.upPx * upFill
+                    if (filled > 0f) drawRoundRect(color, Offset(0f, session.upPx - filled), Size(w, filled), r)
+                    if (upFill > 0f || !session.bidirectional) thumb(session.upPx - filled)
+                }
+                if (session.downPx > 0f) {
+                    drawRoundRect(trackBg, Offset(0f, downTop), Size(w, session.downPx), r)
+                    val filled = session.downPx * downFill
+                    if (filled > 0f) drawRoundRect(color, Offset(0f, downTop), Size(w, filled), r)
+                    if (downFill > 0f || !session.bidirectional) thumb(downTop + filled)
+                }
             }
             if (session.labelRight) labelBox()
         }
     }
 }
 
-/** Places the track flush against the button edge, on the chosen side. */
+/** Places the popup so its middle (button-sized) gap lies exactly over the button. */
 private class SliderPositionProvider(private val s: Session) : PopupPositionProvider {
     override fun calculatePosition(
         anchorBounds: IntRect,
@@ -263,7 +349,7 @@ private class SliderPositionProvider(private val s: Session) : PopupPositionProv
         popupContentSize: IntSize,
     ): IntOffset {
         val x = if (s.labelRight) anchorBounds.left else anchorBounds.right - popupContentSize.width
-        val y = if (s.up) anchorBounds.top - popupContentSize.height else anchorBounds.bottom
+        val y = anchorBounds.top - s.upPx.roundToInt()
         return IntOffset(x, y)
     }
 }

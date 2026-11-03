@@ -37,6 +37,8 @@ Apps can also hook `onHubStart(context)` (called once when the hub activity star
 
 - **Ring launcher:** press and hold the center button, slide toward an app (selection by angle, haptic tick), release to open. Release on the center cancels. A quick tap keeps the ring open; then tap an app.
 - **Calories:** +/−10/50/100 for today, never below 0. Week = last 7 days, Month = last 30 days. The limit field lives only in memory.
+- **Weight (in Calories):** the slider right of today's kcal always starts at the latest logged weight. Slide up/down for ±1 kg, committed in 0.1 kg steps; one value per day (a new one replaces today's). Before the first entry it's a number field.
+- **ValueSlider** (`controls/`): the value follows the finger directly, shown one decimal finer than the step (0.1 → 10.01, 10.02 …); lifting commits it rounded to the step (10.03 → 10.0, 10.05 → 10.1). Haptic tick on each step change. `mode = SliderMode.Bidirectional(start)` (opt-in) opens the track both up and down from the button: up adds, down subtracts. Each half is `trackLength / 2`, or up to the screen edge if there's less room — positioning the control near the screen middle is the caller's job.
 - **Training plan:** a weekly template (Mon–Sun). Each edit stores a new plan version effective *today*; a day resolves to the newest version that started on or before it. So past days are frozen, and a change during the day becomes that day's plan.
 - **Reset all / Copy to all days:** tap twice within 3 s (no dialogs).
 - Exercises are defined in `apps/sports/SportsModel.kt` (`EXERCISES`). Don't rename ids of exercises that have data.
