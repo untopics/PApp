@@ -53,14 +53,17 @@ fun CalorieChart(
 
     Canvas(modifier) {
         val n = values.size
-        if (n == 0) return@Canvas
         val dp = density
         val labelH = 20f * dp
+        // Too small to draw anything sensible (e.g. squeezed by the keyboard).
+        if (n == 0 || size.height < labelH + 40f * dp || size.width <= 0f) return@Canvas
         val slot = size.width / n
         val x = { i: Int -> i * slot + slot / 2f }
         val week = n <= 7
 
-        val hasWeight = weights.any { it != null } || weightAvg.any { it != null }
+        // The weight band needs ~40dp to be readable; below that it's dropped and the bars get the space.
+        val hasWeight = (weights.any { it != null } || weightAvg.any { it != null }) &&
+            (size.height - labelH) * 0.35f >= 40f * dp
         val weightH = if (hasWeight) (size.height - labelH) * 0.35f else 0f
         val bandGap = if (hasWeight) 10f * dp else 0f
 
@@ -85,7 +88,7 @@ fun CalorieChart(
             val y = { kg: Float -> bottom - (bottom - top) * (kg - lo) / (hi - lo) }
 
             if (weightGoal != null) {
-                val gy = y(weightGoal).coerceIn(top, bottom)
+                val gy = y(weightGoal).clamp(top, bottom)
                 val pinned = weightGoal < lo || weightGoal > hi
                 drawLine(
                     weightColor.copy(alpha = 0.7f), Offset(0f, gy), Offset(size.width, gy),
@@ -121,7 +124,7 @@ fun CalorieChart(
             if (last >= 0) {
                 val v = weightAvg[last]!!
                 val t = measure(measurer, "%.1f".format(v), weightLabelStyle)
-                val tx = (x(last) - t.size.width / 2f).coerceIn(0f, size.width - t.size.width)
+                val tx = (x(last) - t.size.width / 2f).clamp(0f, size.width - t.size.width)
                 drawText(t, topLeft = Offset(tx, (y(v) - t.size.height - 4f * dp).coerceAtLeast(0f)))
             }
             drawText(measure(measurer, "kg · Ø7d", weightLabelStyle), topLeft = Offset.Zero)
@@ -165,3 +168,6 @@ fun CalorieChart(
 
 private fun DrawScope.measure(measurer: TextMeasurer, text: String, style: TextStyle): TextLayoutResult =
     measurer.measure(AnnotatedString(text), style)
+
+/** Like coerceIn, but never throws: an empty range (max < min) resolves to [min]. */
+private fun Float.clamp(min: Float, max: Float): Float = if (max < min) min else coerceIn(min, max)
