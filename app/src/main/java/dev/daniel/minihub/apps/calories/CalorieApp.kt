@@ -75,6 +75,10 @@ class CalorieRepo(private val store: JsonStore) {
     var limit by mutableStateOf<Int?>(null)
         private set
 
+    /** Weight goal in kg (dashed line in the chart); null = none. */
+    var weightGoal by mutableStateOf<Float?>(null)
+        private set
+
     init {
         val root = store.read()
         val obj = root.optJSONObject("days")
@@ -82,6 +86,22 @@ class CalorieRepo(private val store: JsonStore) {
         limit = root.optInt("limit", 0).takeIf { it > 0 }
         val w = root.optJSONObject("weights")
         w?.keys()?.forEach { k -> runCatching { weights[LocalDate.parse(k)] = w.getDouble(k).toFloat() } }
+        weightGoal = root.optDouble("weightGoal", 0.0).toFloat().takeIf { it > 0f }
+    }
+
+    fun weight(date: LocalDate): Float? = weights[date]
+
+    /** Mean of the weights logged in the 7 days ending on [date]; null if none. */
+    fun weightAvg7(date: LocalDate): Float? {
+        val vals = (0L..6L).mapNotNull { weights[date.minusDays(it)] }
+        return if (vals.isEmpty()) null else vals.sum() / vals.size
+    }
+
+    fun updateWeightGoal(value: Float?) {
+        val v = value?.takeIf { it in 20f..400f }
+        if (v == weightGoal) return
+        weightGoal = v
+        save()
     }
 
     /** Latest logged weight on or before [date] and the day it was logged; null = never logged. */
@@ -119,6 +139,7 @@ class CalorieRepo(private val store: JsonStore) {
             weights.forEach { (k, v) -> w.put(k.toString(), v.toDouble()) }
             root.put("weights", w)
         }
+        weightGoal?.let { root.put("weightGoal", it.toDouble()) }
         store.write(root)
     }
 }
@@ -157,12 +178,15 @@ private val KcalScale = ValueScale.piecewise(0f to 25f, 0.25f to 400f, 1f to 200
 /** Weight slider: ±1 kg linear each way from the current weight, committed in 0.1 kg steps. */
 private val WeightScale = ValueScale.linear(0f, 1f)
 
+private val WeightColor = Color(0xFF7E57C2)
+
 @Composable
 private fun CalorieScreen(repo: CalorieRepo, onBack: () -> Unit) {
     val today = rememberToday()
     var range by remember { mutableStateOf(Range.WEEK) }
     var offset by remember { mutableIntStateOf(0) } // 0 = current week/month
     var limitText by remember { mutableStateOf(repo.limit?.toString() ?: "") }
+    var goalText by remember { mutableStateOf(repo.weightGoal?.let { "%.1f".format(it) } ?: "") }
     val limit = repo.limit
     val value = repo.get(today)
     val fmt = remember { DateTimeFormatter.ofPattern("EEE d MMM", Locale.getDefault()) }
@@ -183,7 +207,21 @@ private fun CalorieScreen(repo: CalorieRepo, onBack: () -> Unit) {
                 label = { Text("Limit") },
                 singleLine = true,
                 keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
-                modifier = Modifier.width(110.dp),
+                modifier = Modifier.width(96.dp),
+            )
+            Spacer(Modifier.width(8.dp))
+            OutlinedTextField(
+                value = goalText,
+                onValueChange = { s ->
+                    goalText = s.filter { it.isDigit() || it == '.' || it == ',' }.take(5)
+                    // Empty clears the goal; partial input (e.g. "7") is ignored until it's plausible.
+                    if (goalText.isEmpty()) repo.updateWeightGoal(null)
+                    else goalText.replace(',', '.').toFloatOrNull()?.takeIf { it >= 20f }?.let(repo::updateWeightGoal)
+                },
+                label = { Text("Goal kg") },
+                singleLine = true,
+                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal),
+                modifier = Modifier.width(96.dp),
             )
         }
         val start = range.start(today, offset)
@@ -203,7 +241,17 @@ private fun CalorieScreen(repo: CalorieRepo, onBack: () -> Unit) {
         Spacer(Modifier.height(4.dp))
         val dates = generateSequence(start) { it.plusDays(1) }.takeWhile { !it.isAfter(end) }.toList()
         val values = dates.map { repo.get(it) }
-        CalorieChart(dates, values, limit, CalorieApp.accent, Modifier.fillMaxWidth().weight(1f))
+        CalorieChart(
+            dates = dates,
+            values = values,
+            limit = limit,
+            barColor = CalorieApp.accent,
+            weights = dates.map { repo.weight(it) },
+            weightAvg = dates.map { repo.weightAvg7(it) },
+            weightGoal = repo.weightGoal,
+            weightColor = WeightColor,
+            modifier = Modifier.fillMaxWidth().weight(1f),
+        )
         val logged = values.filter { it > 0 }
         Text(
             if (logged.isNotEmpty()) "Ø ${logged.sum() / logged.size} kcal over ${logged.size} logged days" else " ",
@@ -311,8 +359,8 @@ private fun WeightSlider(repo: CalorieRepo, today: LocalDate, date: LocalDate, k
             step = 0.1f,
             mode = SliderMode.Bidirectional(start = kg),
             onRelease = { repo.setWeight(today, it) },
-            color = MaterialTheme.colorScheme.tertiaryContainer,
-            contentColor = MaterialTheme.colorScheme.onTertiaryContainer,
+            color = WeightColor,
+            contentColor = Color.White,
             modifier = Modifier.fillMaxWidth().height(64.dp),
         )
     }
