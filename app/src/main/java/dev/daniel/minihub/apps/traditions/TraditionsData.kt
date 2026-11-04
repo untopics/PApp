@@ -16,7 +16,7 @@ import java.util.UUID
  * {
  *   "showOptional": true,
  *   "overrides": { "kg-nikolo@2026": "2026-12-07" },        // built-in id @ year -> date
- *   "entries": [ { "id": "...", "category": "birthday", "name": "Anna", "date": "2020-05-04",
+ *   "entries": [ { "id": "...", "category": "birthday", "name": "Anna", "date": "2020-05-04", "yearKnown": true,
  *                  "presents": [ { "id": "...", "text": "Lego", "done": false } ], ... } ]
  * }
  * Unknown keys on an entry are kept, so later per-category fields survive edits.
@@ -30,7 +30,7 @@ data class TraditionsSnapshot(
 }
 
 object TraditionsData {
-    private val KNOWN = setOf("id", "category", "name", "date", "presents")
+    private val KNOWN = setOf("id", "category", "name", "date", "yearKnown", "presents")
 
     fun load(store: JsonStore): TraditionsSnapshot {
         val root = store.read()
@@ -55,7 +55,7 @@ object TraditionsData {
                         presents += Present(p.optString("id").ifBlank { UUID.randomUUID().toString() }, text, p.optBoolean("done"))
                     }
                 }
-                entries += UserEntry(o.optString("id"), cat, o.optString("name"), date, presents, extra.toString())
+                entries += UserEntry(o.optString("id"), cat, o.optString("name"), date, o.optBoolean("yearKnown", true), presents, extra.toString())
             }
         }
         return TraditionsSnapshot(root.optBoolean("showOptional", true), overrides, entries)
@@ -69,6 +69,7 @@ object TraditionsData {
             for (e in s.entries) {
                 val o = runCatching { JSONObject(e.extraJson) }.getOrDefault(JSONObject())
                 o.put("id", e.id).put("category", e.category.id).put("name", e.name).put("date", e.date.toString())
+                    .put("yearKnown", e.yearKnown)
                 o.put("presents", JSONArray().apply {
                     for (p in e.presents) put(JSONObject().put("id", p.id).put("text", p.text).put("done", p.done))
                 })
@@ -105,10 +106,17 @@ class TraditionsRepo(private val store: JsonStore) {
         save()
     }
 
-    fun upsert(id: String?, category: Category, name: String, date: LocalDate) {
+    fun upsert(id: String?, category: Category, name: String, date: LocalDate, yearKnown: Boolean) {
+        val d = if (yearKnown) date else date.withYear(NO_YEAR)
         val i = entries.indexOfFirst { it.id == id }
-        if (i >= 0) entries[i] = entries[i].copy(category = category, name = name.trim(), date = date)
-        else entries += UserEntry(UUID.randomUUID().toString(), category, name.trim(), date)
+        if (i >= 0) entries[i] = entries[i].copy(category = category, name = name.trim(), date = d, yearKnown = yearKnown)
+        else entries += UserEntry(UUID.randomUUID().toString(), category, name.trim(), d, yearKnown)
+        save()
+    }
+
+    fun import(rows: List<ImportRow>) {
+        if (rows.isEmpty()) return
+        entries += rows.map { UserEntry(UUID.randomUUID().toString(), it.category, it.name, it.date(), it.year != null) }
         save()
     }
 

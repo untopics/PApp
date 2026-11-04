@@ -27,6 +27,7 @@ import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Button
+import androidx.compose.material3.Checkbox
 import androidx.compose.material3.DatePicker
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.HorizontalDivider
@@ -50,6 +51,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.input.KeyboardCapitalization
@@ -98,6 +100,8 @@ object TraditionsApp : MiniApp {
 private val locale: Locale get() = Locale.getDefault()
 private val ShortDate = DateTimeFormatter.ofPattern("EEE d MMM", Locale.getDefault())
 private val LongDate = DateTimeFormatter.ofPattern("EEEE, d MMMM yyyy", Locale.getDefault())
+private val DayMonth = DateTimeFormatter.ofPattern("d MMMM", Locale.getDefault())
+private val RowDate = DateTimeFormatter.ofPattern("d MMM yyyy", Locale.getDefault())
 private val MonthYear = DateTimeFormatter.ofPattern("MMMM yyyy", Locale.getDefault())
 
 private const val NEW_ENTRY = "new"
@@ -108,6 +112,15 @@ private fun TraditionsScreen(repo: TraditionsRepo, onBack: () -> Unit) {
     var tab by rememberSaveable { mutableStateOf(0) }
     var openKey by rememberSaveable { mutableStateOf<String?>(null) }
     var editingId by rememberSaveable { mutableStateOf<String?>(null) }
+    var importResult by remember { mutableStateOf<ImportResult?>(null) }
+    var importError by remember { mutableStateOf<String?>(null) }
+    val resolver = LocalContext.current.contentResolver
+    val pickFile = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
+        if (uri == null) return@rememberLauncherForActivityResult
+        val bytes = runCatching { resolver.openInputStream(uri)?.use { it.readBytes() } }.getOrNull()
+        if (bytes == null) importError = "The file couldn't be opened."
+        else importResult = BirthdaysCsv.parse(BirthdaysCsv.decode(bytes))
+    }
 
     // Re-derived whenever entries, overrides or the optional toggle change (all snapshot state).
     val snapshot = repo.snapshot()
@@ -115,14 +128,28 @@ private fun TraditionsScreen(repo: TraditionsRepo, onBack: () -> Unit) {
 
     val editing = editingId
     val key = openKey
+    val result = importResult
     when {
+        result != null -> {
+            BackHandler { importResult = null }
+            ImportScreen(result, repo.entries, onImport = {
+                repo.import(it)
+                importResult = null
+                editingId = null
+            }, onCancel = { importResult = null })
+        }
         editing != null -> {
             BackHandler { editingId = null }
             EntryForm(
                 existing = repo.entries.firstOrNull { it.id == editing },
-                onSave = { cat, name, date ->
-                    repo.upsert(editing.takeIf { it != NEW_ENTRY }, cat, name, date)
+                importError = importError,
+                onSave = { cat, name, date, yearKnown ->
+                    repo.upsert(editing.takeIf { it != NEW_ENTRY }, cat, name, date, yearKnown)
                     editingId = null
+                },
+                onImport = {
+                    importError = null
+                    pickFile.launch(arrayOf("*/*"))
                 },
                 onCancel = { editingId = null },
             )
@@ -331,7 +358,7 @@ private fun DetailScreen(
             }
             if (e != null) {
                 Section("Name", e.name)
-                Section("Date of birth", e.date.format(LongDate))
+                Section(e.category.dateLabel, entryDate(e))
                 Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
                     Label("Reminders")
                     for (r in planner.remindersFor(occ)) ReminderLine(occ.date, r, today)
@@ -447,17 +474,20 @@ private fun Section(title: String, body: String) {
 @Composable
 private fun EntryForm(
     existing: UserEntry?,
-    onSave: (Category, String, LocalDate) -> Unit,
+    importError: String?,
+    onSave: (Category, String, LocalDate, Boolean) -> Unit,
+    onImport: () -> Unit,
     onCancel: () -> Unit,
 ) {
     var category by rememberSaveable { mutableStateOf(existing?.category ?: Category.BIRTHDAY) }
     var name by rememberSaveable { mutableStateOf(existing?.name ?: "") }
     var date by rememberSaveable { mutableStateOf(existing?.date?.toString()) }
+    var yearKnown by rememberSaveable { mutableStateOf(existing?.yearKnown ?: true) }
     var picking by remember { mutableStateOf(false) }
 
     if (picking) {
         BackHandler { picking = false }
-        DatePickScreen("Date of birth", date?.let(LocalDate::parse), onPick = {
+        DatePickScreen(category.dateLabel, date?.let(LocalDate::parse), onPick = {
             date = it.toString()
             picking = false
         }, onCancel = { picking = false })
@@ -468,25 +498,79 @@ private fun EntryForm(
         MiniTopBar(if (existing == null) "New entry" else "Edit entry", onCancel)
         Label("Category")
         ChoiceRow(Category.entries.toList(), category, { "${it.kind.icon} ${it.label}" }, { category = it })
-        when (category) {
-            Category.BIRTHDAY -> {
-                OutlinedTextField(
-                    value = name,
-                    onValueChange = { name = it },
-                    label = { Text("Name") },
-                    singleLine = true,
-                    modifier = Modifier.fillMaxWidth(),
-                )
-                OutlinedButton(onClick = { picking = true }, modifier = Modifier.fillMaxWidth().height(52.dp)) {
-                    Text(date?.let { LocalDate.parse(it).format(LongDate) } ?: "Choose date of birth")
+        OutlinedTextField(
+            value = name,
+            onValueChange = { name = it },
+            label = { Text("Name") },
+            singleLine = true,
+            modifier = Modifier.fillMaxWidth(),
+        )
+        OutlinedButton(onClick = { picking = true }, modifier = Modifier.fillMaxWidth().height(52.dp)) {
+            Text(date?.let { LocalDate.parse(it).format(if (yearKnown) LongDate else DayMonth) } ?: "Choose ${category.dateLabel.lowercase()}")
+        }
+        Row(Modifier.fillMaxWidth().clickable { yearKnown = !yearKnown }, verticalAlignment = Alignment.CenterVertically) {
+            Checkbox(checked = !yearKnown, onCheckedChange = { yearKnown = !it })
+            Text("Year unknown", fontSize = 15.sp)
+        }
+        Button(
+            onClick = { onSave(category, name, LocalDate.parse(date!!), yearKnown) },
+            enabled = name.isNotBlank() && date != null,
+            modifier = Modifier.fillMaxWidth().height(52.dp),
+        ) { Text("Save") }
+        if (existing == null) {
+            Spacer(Modifier.height(8.dp))
+            OutlinedButton(onClick = onImport, modifier = Modifier.fillMaxWidth().height(52.dp)) { Text("Import from Birthdays (CSV)") }
+            if (importError != null) Text(importError, color = MaterialTheme.colorScheme.error, fontSize = 14.sp)
+        }
+    }
+}
+
+private fun entryDate(e: UserEntry): String =
+    if (e.yearKnown) e.date.format(LongDate) else e.date.format(DayMonth) + " · year unknown"
+
+// ── Import preview ──────────────────────────────────────────────────
+
+@Composable
+private fun ImportScreen(result: ImportResult, existing: List<UserEntry>, onImport: (List<ImportRow>) -> Unit, onCancel: () -> Unit) {
+    val fresh = remember(result, existing.toList()) { BirthdaysCsv.newRows(result.rows, existing).toSet() }
+    val dupes = result.rows.size - fresh.size
+    Column(Modifier.fillMaxSize().padding(horizontal = 16.dp)) {
+        MiniTopBar("Import Birthdays", onCancel)
+        Text(
+            buildString {
+                append("${fresh.size} new")
+                if (dupes > 0) append(" · $dupes already there")
+                if (result.unreadableLines.isNotEmpty()) append(" · lines ${result.unreadableLines.joinToString(", ")} unreadable")
+            },
+            fontSize = 14.sp,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+        LazyColumn(Modifier.weight(1f).padding(vertical = 8.dp)) {
+            items(result.rows, key = { it.line }) { r ->
+                val isNew = r in fresh
+                Row(Modifier.fillMaxWidth().padding(vertical = 6.dp), verticalAlignment = Alignment.CenterVertically) {
+                    Text(
+                        "${r.category.kind.icon} ${r.name}",
+                        modifier = Modifier.weight(1f),
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                        fontSize = 15.sp,
+                        color = if (isNew) MaterialTheme.colorScheme.onSurface else MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                    Text(
+                        if (isNew) r.date().format(if (r.year != null) RowDate else DayMonth) else "already there",
+                        fontSize = 14.sp,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
                 }
             }
         }
         Button(
-            onClick = { onSave(category, name, LocalDate.parse(date!!)) },
-            enabled = name.isNotBlank() && date != null,
-            modifier = Modifier.fillMaxWidth().height(52.dp),
-        ) { Text("Save") }
+            onClick = { onImport(fresh.toList()) },
+            enabled = fresh.isNotEmpty(),
+            modifier = Modifier.fillMaxWidth().height(52.dp).padding(bottom = 4.dp),
+        ) { Text(if (fresh.isEmpty()) "Nothing new to import" else "Import ${fresh.size}") }
+        Spacer(Modifier.height(8.dp))
     }
 }
 

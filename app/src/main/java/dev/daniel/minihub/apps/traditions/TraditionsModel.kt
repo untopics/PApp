@@ -78,6 +78,7 @@ enum class Kind(val label: String, val icon: String) {
     SCHOOL("School calendar", "🎒"),
     REGIONAL("Regional holiday", "📍"),
     BIRTHDAY("Birthday", "🎂"),
+    ANNIVERSARY("Anniversary", "💍"),
 }
 
 /** A prep task; [daysBefore] is also when its reminder fires (0 = on the day). */
@@ -104,13 +105,22 @@ data class UserEntry(
     val id: String,
     val category: Category,
     val name: String,
+    /** With an unknown year, [date] carries [NO_YEAR] and only month and day count. */
     val date: LocalDate,
+    val yearKnown: Boolean = true,
     val presents: List<Present> = emptyList(),
     val extraJson: String = "{}",
 )
 
-enum class Category(val id: String, val label: String, val kind: Kind, val reminderDays: List<Int>) {
-    BIRTHDAY("birthday", "Birthday", Kind.BIRTHDAY, listOf(28, 14, 3, 0));
+/** Placeholder year for entries without one; a leap year, so 29 Feb survives. */
+const val NO_YEAR = 2000
+
+enum class Category(val id: String, val label: String, val kind: Kind, val dateLabel: String, val reminderDays: List<Int>) {
+    BIRTHDAY("birthday", "Birthday", Kind.BIRTHDAY, "Date of birth", listOf(28, 14, 3, 0)),
+    ANNIVERSARY("anniversary", "Anniversary", Kind.ANNIVERSARY, "Date", listOf(28, 14, 3, 0));
+
+    /** Subject of a reminder sentence: "Anna's birthday", or the anniversary's own name. */
+    fun subject(name: String) = if (this == BIRTHDAY) "$name's birthday" else name
 
     companion object {
         fun byId(id: String): Category? = entries.firstOrNull { it.id == id }
@@ -151,7 +161,7 @@ class Planner(
                 out += Occurrence(key, o ?: t.rule.dateIn(year), t.name, t.kind, t.tier, tradition = t, overridden = o != null)
             }
             for (e in entries) {
-                if (year < e.date.year) continue
+                if (e.yearKnown && year < e.date.year) continue
                 out += Occurrence("${e.id}@$year", anniversaryIn(e.date, year), e.name, e.category.kind, Tier.CORE, entry = e)
             }
         }
@@ -164,10 +174,11 @@ class Planner(
         if (t != null) return t.prep.map { Reminder("${o.key}#${it.daysBefore}", o, it.daysBefore, it.text) }
         val e = o.entry ?: return emptyList()
         return e.category.reminderDays.map { d ->
+            val what = e.category.subject(e.name)
             val text = when {
-                d == 0 -> "${e.name}'s birthday is today"
-                d >= 7 && d % 7 == 0 -> "${e.name}'s birthday in ${d / 7} weeks"
-                else -> "${e.name}'s birthday in $d days"
+                d == 0 -> "$what is today"
+                d >= 7 && d % 7 == 0 -> "$what in ${d / 7} weeks"
+                else -> "$what in $d days"
             }
             Reminder("${o.key}#$d", o, d, text)
         }
