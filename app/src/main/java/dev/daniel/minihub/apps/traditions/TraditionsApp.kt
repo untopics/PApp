@@ -19,6 +19,7 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.LazyListState
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.rememberScrollState
@@ -112,6 +113,9 @@ private fun TraditionsScreen(repo: TraditionsRepo, onBack: () -> Unit) {
     var tab by rememberSaveable { mutableStateOf(0) }
     var openKey by rememberSaveable { mutableStateOf<String?>(null) }
     var editingId by rememberSaveable { mutableStateOf<String?>(null) }
+    // Hoisted so the lists keep their scroll position while a detail or form replaces them.
+    val calendarState = rememberLazyListState(initialFirstVisibleItemIndex = calendarMonthIndex(today))
+    val upcomingState = rememberLazyListState()
     var importResult by remember { mutableStateOf<ImportResult?>(null) }
     var importError by remember { mutableStateOf<String?>(null) }
     val resolver = LocalContext.current.contentResolver
@@ -178,8 +182,8 @@ private fun TraditionsScreen(repo: TraditionsRepo, onBack: () -> Unit) {
             }
             ChoiceRow(listOf(0, 1), tab, { if (it == 0) "Calendar" else "Upcoming" }, { tab = it })
             Spacer(Modifier.height(8.dp))
-            if (tab == 0) CalendarList(planner, today) { openKey = it }
-            else UpcomingList(planner, today) { openKey = it }
+            if (tab == 0) CalendarList(planner, today, calendarState) { openKey = it }
+            else UpcomingList(planner, today, upcomingState) { openKey = it }
         }
     }
 }
@@ -191,9 +195,14 @@ private sealed interface CalRow {
     data class Day(val date: LocalDate, val items: List<Occurrence>) : CalRow
 }
 
+private fun calendarStart(today: LocalDate): LocalDate = today.withDayOfMonth(1).minusMonths(1)
+
+/** Row index of the current month's header: the previous month's header plus its days. */
+private fun calendarMonthIndex(today: LocalDate): Int = 1 + calendarStart(today).lengthOfMonth()
+
 @Composable
-private fun CalendarList(planner: Planner, today: LocalDate, onOpen: (String) -> Unit) {
-    val start = remember(today) { today.withDayOfMonth(1).minusMonths(1) }
+private fun CalendarList(planner: Planner, today: LocalDate, state: LazyListState, onOpen: (String) -> Unit) {
+    val start = remember(today) { calendarStart(today) }
     val end = remember(today) { today.plusMonths(13).withDayOfMonth(1).minusDays(1) }
     val rows = remember(planner, start, end) {
         val byDate = planner.occurrences(start, end).groupBy { it.date }
@@ -206,11 +215,6 @@ private fun CalendarList(planner: Planner, today: LocalDate, onOpen: (String) ->
         }
         out
     }
-    val todayIndex = remember(rows, today) {
-        // Start with the current month header on top, so today is visible with a little context.
-        rows.indexOfFirst { it is CalRow.Month && it.first == today.withDayOfMonth(1) }.coerceAtLeast(0)
-    }
-    val state = rememberLazyListState(initialFirstVisibleItemIndex = todayIndex)
     LazyColumn(Modifier.fillMaxSize(), state = state) {
         items(rows, key = { r ->
             when (r) {
@@ -275,9 +279,9 @@ private fun DayRow(date: LocalDate, items: List<Occurrence>, isToday: Boolean, o
 // ── Upcoming: only entries, from today ───────────────────────────────
 
 @Composable
-private fun UpcomingList(planner: Planner, today: LocalDate, onOpen: (String) -> Unit) {
+private fun UpcomingList(planner: Planner, today: LocalDate, state: LazyListState, onOpen: (String) -> Unit) {
     val items = remember(planner, today) { planner.occurrences(today, today.plusDays(365)) }
-    LazyColumn(Modifier.fillMaxSize(), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+    LazyColumn(Modifier.fillMaxSize(), state = state, verticalArrangement = Arrangement.spacedBy(2.dp)) {
         items(items, key = { it.key }) { o ->
             Row(
                 Modifier.fillMaxWidth().clickable { onOpen(o.key) }.padding(vertical = 8.dp),
