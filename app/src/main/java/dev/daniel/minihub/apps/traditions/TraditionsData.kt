@@ -30,7 +30,7 @@ data class TraditionsSnapshot(
 }
 
 object TraditionsData {
-    private val KNOWN = setOf("id", "category", "name", "date", "yearKnown", "presents")
+    private val KNOWN = setOf("id", "category", "name", "date", "yearKnown", "presents", "reminders")
 
     fun load(store: JsonStore): TraditionsSnapshot {
         val root = store.read()
@@ -55,7 +55,15 @@ object TraditionsData {
                         presents += Present(p.optString("id").ifBlank { UUID.randomUUID().toString() }, text, p.optBoolean("done"))
                     }
                 }
-                entries += UserEntry(o.optString("id"), cat, o.optString("name"), date, o.optBoolean("yearKnown", true), presents, extra.toString())
+                val reminders = o.optJSONArray("reminders")?.let { ra ->
+                    (0 until ra.length()).mapNotNull { j ->
+                        ra.optJSONObject(j)?.let { r -> EntryReminder(r.optInt("days").coerceIn(0, MAX_REMINDER_DAYS), r.optString("note")) }
+                    }
+                }
+                entries += UserEntry(
+                    o.optString("id"), cat, o.optString("name"), date, o.optBoolean("yearKnown", true),
+                    presents, reminders, extra.toString(),
+                )
             }
         }
         return TraditionsSnapshot(root.optBoolean("showOptional", true), overrides, entries)
@@ -72,6 +80,11 @@ object TraditionsData {
                     .put("yearKnown", e.yearKnown)
                 o.put("presents", JSONArray().apply {
                     for (p in e.presents) put(JSONObject().put("id", p.id).put("text", p.text).put("done", p.done))
+                })
+                val rs = e.reminders
+                if (rs == null) o.remove("reminders")
+                else o.put("reminders", JSONArray().apply {
+                    for (r in rs) put(JSONObject().put("days", r.daysBefore).put("note", r.note))
                 })
                 put(o)
             }
@@ -135,6 +148,27 @@ class TraditionsRepo(private val store: JsonStore) {
         val i = entries.indexOfFirst { it.id == entryId }
         if (i < 0) return
         entries[i] = entries[i].copy(presents = f(entries[i].presents))
+        save()
+    }
+
+    fun addReminder(entryId: String, days: Int, note: String) {
+        val r = EntryReminder(days.coerceIn(0, MAX_REMINDER_DAYS), note.trim())
+        updateReminders(entryId) { if (r in it) it else it + r }
+    }
+
+    fun deleteReminder(entryId: String, r: EntryReminder) = updateReminders(entryId) { it - r }
+
+    fun resetReminders(entryId: String) {
+        val i = entries.indexOfFirst { it.id == entryId }
+        if (i < 0) return
+        entries[i] = entries[i].copy(reminders = null)
+        save()
+    }
+
+    private fun updateReminders(entryId: String, f: (List<EntryReminder>) -> List<EntryReminder>) {
+        val i = entries.indexOfFirst { it.id == entryId }
+        if (i < 0) return
+        entries[i] = entries[i].copy(reminders = f(entries[i].effectiveReminders()))
         save()
     }
 

@@ -100,6 +100,9 @@ data class Tradition(
 /** A present idea; not tied to a year, so the list carries over from birthday to birthday. */
 data class Present(val id: String, val text: String, val done: Boolean = false)
 
+/** A reminder on an entry; a blank [note] gets the standard "… in N days" text. */
+data class EntryReminder(val daysBefore: Int, val note: String = "")
+
 /** User-added entry. [category] decides the fields; extra JSON is kept for later fields. */
 data class UserEntry(
     val id: String,
@@ -109,6 +112,8 @@ data class UserEntry(
     val date: LocalDate,
     val yearKnown: Boolean = true,
     val presents: List<Present> = emptyList(),
+    /** null = the category's default reminders; a list (possibly empty) once edited for this entry. */
+    val reminders: List<EntryReminder>? = null,
     val extraJson: String = "{}",
 )
 
@@ -126,6 +131,23 @@ enum class Category(val id: String, val label: String, val kind: Kind, val dateL
         fun byId(id: String): Category? = entries.firstOrNull { it.id == id }
     }
 }
+
+fun UserEntry.effectiveReminders(): List<EntryReminder> =
+    reminders ?: category.reminderDays.map { EntryReminder(it) }
+
+fun UserEntry.reminderText(r: EntryReminder): String {
+    if (r.note.isNotBlank()) return r.note
+    val what = category.subject(name)
+    val d = r.daysBefore
+    return when {
+        d == 0 -> "$what is today"
+        d >= 7 && d % 7 == 0 -> "$what in ${d / 7} weeks"
+        else -> "$what in $d days"
+    }
+}
+
+/** Longest lead time a reminder can have. */
+const val MAX_REMINDER_DAYS = 365
 
 /** Birthday on [year]; 29 Feb falls on 28 Feb in non-leap years. */
 fun anniversaryIn(date: LocalDate, year: Int): LocalDate = MonthDay.from(date).atYear(year)
@@ -173,20 +195,15 @@ class Planner(
         val t = o.tradition
         if (t != null) return t.prep.map { Reminder("${o.key}#${it.daysBefore}", o, it.daysBefore, it.text) }
         val e = o.entry ?: return emptyList()
-        return e.category.reminderDays.map { d ->
-            val what = e.category.subject(e.name)
-            val text = when {
-                d == 0 -> "$what is today"
-                d >= 7 && d % 7 == 0 -> "$what in ${d / 7} weeks"
-                else -> "$what in $d days"
-            }
-            Reminder("${o.key}#$d", o, d, text)
+        return e.effectiveReminders().map { r ->
+            val key = if (r.note.isBlank()) "${o.key}#${r.daysBefore}" else "${o.key}#${r.daysBefore}#${r.note.hashCode()}"
+            Reminder(key, o, r.daysBefore, e.reminderText(r))
         }
     }
 
     /** Reminders whose fire date is [day]. */
     fun remindersOn(day: LocalDate): List<Reminder> =
-        occurrences(day, day.plusDays(60)).flatMap { remindersFor(it) }
+        occurrences(day, day.plusDays(MAX_REMINDER_DAYS.toLong() + 1)).flatMap { remindersFor(it) }
             .filter { it.occurrence.date.minusDays(it.daysBefore.toLong()) == day }
 
     companion object {

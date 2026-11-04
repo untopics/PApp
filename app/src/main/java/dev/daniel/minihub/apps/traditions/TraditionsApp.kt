@@ -55,6 +55,7 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
+import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.KeyboardCapitalization
 import androidx.compose.ui.text.style.TextDecoration
 import androidx.compose.ui.text.style.TextOverflow
@@ -346,7 +347,7 @@ private fun DetailScreen(
                 if (reminders.isNotEmpty()) {
                     Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
                         Label("Prep & reminders")
-                        for (r in reminders) ReminderLine(occ.date, r, today)
+                        for (r in reminders) ReminderLine(occ.date, r.daysBefore, r.text, today)
                     }
                 }
                 Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
@@ -363,10 +364,7 @@ private fun DetailScreen(
             if (e != null) {
                 Section("Name", e.name)
                 Section(e.category.dateLabel, entryDate(e))
-                Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                    Label("Reminders")
-                    for (r in planner.remindersFor(occ)) ReminderLine(occ.date, r, today)
-                }
+                EntryReminders(e, occ.date, today, repo)
                 PresentList(e, repo)
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     OutlinedButton(onClick = { onEdit(e.id) }) { Text("Edit") }
@@ -410,23 +408,9 @@ private fun PresentList(entry: UserEntry, repo: TraditionsRepo) {
     }
 }
 
-@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 private fun PresentRow(p: Present, onToggle: () -> Unit, onDelete: () -> Unit) {
-    val state = rememberSwipeToDismissBoxState(confirmValueChange = {
-        if (it != SwipeToDismissBoxValue.Settled) onDelete()
-        it != SwipeToDismissBoxValue.Settled
-    })
-    SwipeToDismissBox(
-        state = state,
-        backgroundContent = {
-            val alignment = if (state.dismissDirection == SwipeToDismissBoxValue.StartToEnd) Alignment.CenterStart else Alignment.CenterEnd
-            Box(
-                Modifier.fillMaxSize().background(MaterialTheme.colorScheme.errorContainer, RoundedCornerShape(6.dp)).padding(horizontal = 16.dp),
-                contentAlignment = alignment,
-            ) { Text("Delete", color = MaterialTheme.colorScheme.onErrorContainer, fontSize = 14.sp) }
-        },
-    ) {
+    SwipeToDelete(onDelete) {
         Text(
             p.text,
             fontSize = 15.sp,
@@ -440,9 +424,83 @@ private fun PresentRow(p: Present, onToggle: () -> Unit, onDelete: () -> Unit) {
     }
 }
 
+// ── Reminders per entry: defaults until edited, swipe = delete ──────
+
 @Composable
-private fun ReminderLine(date: LocalDate, r: Reminder, today: LocalDate) {
-    val fire = date.minusDays(r.daysBefore.toLong())
+private fun EntryReminders(e: UserEntry, date: LocalDate, today: LocalDate, repo: TraditionsRepo) {
+    var days by rememberSaveable(e.id) { mutableStateOf("") }
+    var note by rememberSaveable(e.id) { mutableStateOf("") }
+    val dayCount = days.toIntOrNull()?.takeIf { it in 0..MAX_REMINDER_DAYS }
+    val add = {
+        if (dayCount != null) {
+            repo.addReminder(e.id, dayCount, note)
+            days = ""
+            note = ""
+        }
+    }
+    Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Label("Reminders")
+            Spacer(Modifier.weight(1f))
+            if (e.reminders != null) TextButton(onClick = { repo.resetReminders(e.id) }) { Text("Use defaults") }
+        }
+        val list = e.effectiveReminders().sortedByDescending { it.daysBefore }
+        if (list.isEmpty()) Text("No reminders", fontSize = 14.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+        for (r in list) {
+            key(r.daysBefore, r.note) {
+                SwipeToDelete({ repo.deleteReminder(e.id, r) }) {
+                    Box(Modifier.fillMaxWidth().background(MaterialTheme.colorScheme.surface).padding(vertical = 8.dp, horizontal = 4.dp)) {
+                        ReminderLine(date, r.daysBefore, e.reminderText(r), today)
+                    }
+                }
+            }
+        }
+        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            OutlinedTextField(
+                value = days,
+                onValueChange = { v -> days = v.filter(Char::isDigit).take(3) },
+                label = { Text("Days") },
+                singleLine = true,
+                isError = days.isNotEmpty() && dayCount == null,
+                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number, imeAction = ImeAction.Next),
+                modifier = Modifier.width(88.dp),
+            )
+            OutlinedTextField(
+                value = note,
+                onValueChange = { note = it },
+                label = { Text("Note (optional)") },
+                singleLine = true,
+                keyboardOptions = KeyboardOptions(capitalization = KeyboardCapitalization.Sentences, imeAction = ImeAction.Done),
+                keyboardActions = KeyboardActions(onDone = { add() }),
+                modifier = Modifier.weight(1f),
+            )
+            TextButton(onClick = add, enabled = dayCount != null) { Text("+", fontSize = 24.sp) }
+        }
+    }
+}
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun SwipeToDelete(onDelete: () -> Unit, content: @Composable () -> Unit) {
+    val state = rememberSwipeToDismissBoxState(confirmValueChange = {
+        if (it != SwipeToDismissBoxValue.Settled) onDelete()
+        it != SwipeToDismissBoxValue.Settled
+    })
+    SwipeToDismissBox(
+        state = state,
+        backgroundContent = {
+            val alignment = if (state.dismissDirection == SwipeToDismissBoxValue.StartToEnd) Alignment.CenterStart else Alignment.CenterEnd
+            Box(
+                Modifier.fillMaxSize().background(MaterialTheme.colorScheme.errorContainer, RoundedCornerShape(6.dp)).padding(horizontal = 16.dp),
+                contentAlignment = alignment,
+            ) { Text("Delete", color = MaterialTheme.colorScheme.onErrorContainer, fontSize = 14.sp) }
+        },
+    ) { content() }
+}
+
+@Composable
+private fun ReminderLine(date: LocalDate, daysBefore: Int, text: String, today: LocalDate) {
+    val fire = date.minusDays(daysBefore.toLong())
     val past = fire.isBefore(today)
     Row {
         Text(
@@ -452,7 +510,7 @@ private fun ReminderLine(date: LocalDate, r: Reminder, today: LocalDate) {
             color = if (past) MaterialTheme.colorScheme.onSurfaceVariant else MaterialTheme.colorScheme.primary,
         )
         Text(
-            r.text,
+            text,
             modifier = Modifier.weight(1f),
             fontSize = 14.sp,
             color = if (past) MaterialTheme.colorScheme.onSurfaceVariant else MaterialTheme.colorScheme.onSurface,
