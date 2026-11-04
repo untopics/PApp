@@ -96,12 +96,16 @@ data class Tradition(
     val editable: Boolean = false,
 )
 
+/** A present idea; not tied to a year, so the list carries over from birthday to birthday. */
+data class Present(val id: String, val text: String, val done: Boolean = false)
+
 /** User-added entry. [category] decides the fields; extra JSON is kept for later fields. */
 data class UserEntry(
     val id: String,
     val category: Category,
     val name: String,
     val date: LocalDate,
+    val presents: List<Present> = emptyList(),
     val extraJson: String = "{}",
 )
 

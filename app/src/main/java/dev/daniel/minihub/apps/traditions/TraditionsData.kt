@@ -16,9 +16,10 @@ import java.util.UUID
  * {
  *   "showOptional": true,
  *   "overrides": { "kg-nikolo@2026": "2026-12-07" },        // built-in id @ year -> date
- *   "entries": [ { "id": "...", "category": "birthday", "name": "Anna", "date": "2020-05-04", ... } ]
+ *   "entries": [ { "id": "...", "category": "birthday", "name": "Anna", "date": "2020-05-04",
+ *                  "presents": [ { "id": "...", "text": "Lego", "done": false } ], ... } ]
  * }
- * Unknown keys on an entry are kept, so later per-category fields (e.g. presents per year) survive edits.
+ * Unknown keys on an entry are kept, so later per-category fields survive edits.
  */
 data class TraditionsSnapshot(
     val showOptional: Boolean,
@@ -29,7 +30,7 @@ data class TraditionsSnapshot(
 }
 
 object TraditionsData {
-    private val KNOWN = setOf("id", "category", "name", "date")
+    private val KNOWN = setOf("id", "category", "name", "date", "presents")
 
     fun load(store: JsonStore): TraditionsSnapshot {
         val root = store.read()
@@ -45,7 +46,16 @@ object TraditionsData {
                 val date = runCatching { LocalDate.parse(o.getString("date")) }.getOrNull() ?: continue
                 val extra = JSONObject()
                 o.keys().forEach { k -> if (k !in KNOWN) extra.put(k, o.get(k)) }
-                entries += UserEntry(o.optString("id"), cat, o.optString("name"), date, extra.toString())
+                val presents = ArrayList<Present>()
+                o.optJSONArray("presents")?.let { pa ->
+                    for (j in 0 until pa.length()) {
+                        val p = pa.optJSONObject(j) ?: continue
+                        val text = p.optString("text")
+                        if (text.isBlank()) continue
+                        presents += Present(p.optString("id").ifBlank { UUID.randomUUID().toString() }, text, p.optBoolean("done"))
+                    }
+                }
+                entries += UserEntry(o.optString("id"), cat, o.optString("name"), date, presents, extra.toString())
             }
         }
         return TraditionsSnapshot(root.optBoolean("showOptional", true), overrides, entries)
@@ -59,6 +69,9 @@ object TraditionsData {
             for (e in s.entries) {
                 val o = runCatching { JSONObject(e.extraJson) }.getOrDefault(JSONObject())
                 o.put("id", e.id).put("category", e.category.id).put("name", e.name).put("date", e.date.toString())
+                o.put("presents", JSONArray().apply {
+                    for (p in e.presents) put(JSONObject().put("id", p.id).put("text", p.text).put("done", p.done))
+                })
                 put(o)
             }
         })
@@ -96,6 +109,24 @@ class TraditionsRepo(private val store: JsonStore) {
         val i = entries.indexOfFirst { it.id == id }
         if (i >= 0) entries[i] = entries[i].copy(category = category, name = name.trim(), date = date)
         else entries += UserEntry(UUID.randomUUID().toString(), category, name.trim(), date)
+        save()
+    }
+
+    fun addPresent(entryId: String, text: String) {
+        if (text.isBlank()) return
+        updatePresents(entryId) { it + Present(UUID.randomUUID().toString(), text.trim()) }
+    }
+
+    fun togglePresent(entryId: String, presentId: String) =
+        updatePresents(entryId) { list -> list.map { if (it.id == presentId) it.copy(done = !it.done) else it } }
+
+    fun deletePresent(entryId: String, presentId: String) =
+        updatePresents(entryId) { list -> list.filterNot { it.id == presentId } }
+
+    private fun updatePresents(entryId: String, f: (List<Present>) -> List<Present>) {
+        val i = entries.indexOfFirst { it.id == entryId }
+        if (i < 0) return
+        entries[i] = entries[i].copy(presents = f(entries[i].presents))
         save()
     }
 
