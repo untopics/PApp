@@ -64,8 +64,10 @@ import androidx.compose.ui.unit.sp
 import dev.daniel.minihub.core.AppContext
 import dev.daniel.minihub.core.ArmedButton
 import dev.daniel.minihub.core.ChoiceRow
+import dev.daniel.minihub.core.DatePickScreen
 import dev.daniel.minihub.core.MiniApp
 import dev.daniel.minihub.core.MiniTopBar
+import dev.daniel.minihub.core.SwipeToDelete
 import dev.daniel.minihub.core.rememberToday
 import java.time.DayOfWeek
 import java.time.Instant
@@ -479,25 +481,6 @@ private fun EntryReminders(e: UserEntry, date: LocalDate, today: LocalDate, repo
     }
 }
 
-@OptIn(ExperimentalMaterial3Api::class)
-@Composable
-private fun SwipeToDelete(onDelete: () -> Unit, content: @Composable () -> Unit) {
-    val state = rememberSwipeToDismissBoxState(confirmValueChange = {
-        if (it != SwipeToDismissBoxValue.Settled) onDelete()
-        it != SwipeToDismissBoxValue.Settled
-    })
-    SwipeToDismissBox(
-        state = state,
-        backgroundContent = {
-            val alignment = if (state.dismissDirection == SwipeToDismissBoxValue.StartToEnd) Alignment.CenterStart else Alignment.CenterEnd
-            Box(
-                Modifier.fillMaxSize().background(MaterialTheme.colorScheme.errorContainer, RoundedCornerShape(6.dp)).padding(horizontal = 16.dp),
-                contentAlignment = alignment,
-            ) { Text("Delete", color = MaterialTheme.colorScheme.onErrorContainer, fontSize = 14.sp) }
-        },
-    ) { content() }
-}
-
 @Composable
 private fun ReminderLine(date: LocalDate, daysBefore: Int, text: String, today: LocalDate) {
     val fire = date.minusDays(daysBefore.toLong())
@@ -633,25 +616,5 @@ private fun ImportScreen(result: ImportResult, existing: List<UserEntry>, onImpo
             modifier = Modifier.fillMaxWidth().height(52.dp).padding(bottom = 4.dp),
         ) { Text(if (fresh.isEmpty()) "Nothing new to import" else "Import ${fresh.size}") }
         Spacer(Modifier.height(8.dp))
-    }
-}
-
-/** Full-screen picker; kept out of scrolling containers so the year grid gets bounded height. */
-@OptIn(ExperimentalMaterial3Api::class)
-@Composable
-private fun DatePickScreen(title: String, initial: LocalDate?, onPick: (LocalDate) -> Unit, onCancel: () -> Unit) {
-    val state = rememberDatePickerState(
-        initialSelectedDateMillis = initial?.atStartOfDay(ZoneOffset.UTC)?.toInstant()?.toEpochMilli(),
-    )
-    Column(Modifier.fillMaxSize().padding(horizontal = 8.dp)) {
-        MiniTopBar(title, onCancel) {
-            TextButton(
-                onClick = {
-                    state.selectedDateMillis?.let { onPick(Instant.ofEpochMilli(it).atZone(ZoneOffset.UTC).toLocalDate()) }
-                },
-                enabled = state.selectedDateMillis != null,
-            ) { Text("Save") }
-        }
-        DatePicker(state = state, modifier = Modifier.weight(1f), title = null)
     }
 }

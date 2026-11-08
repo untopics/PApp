@@ -1,6 +1,18 @@
 package dev.daniel.minihub.core
 
+import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material3.DatePicker
+import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.SwipeToDismissBox
+import androidx.compose.material3.SwipeToDismissBoxValue
+import androidx.compose.material3.rememberDatePickerState
+import androidx.compose.material3.rememberSwipeToDismissBoxState
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.RowScope
@@ -25,6 +37,9 @@ import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import kotlinx.coroutines.delay
+import java.time.Instant
+import java.time.LocalDate
+import java.time.ZoneOffset
 
 @Composable
 fun MiniTopBar(title: String, onBack: () -> Unit, actions: @Composable RowScope.() -> Unit = {}) {
@@ -95,5 +110,45 @@ fun ArmedButton(label: String, onConfirm: () -> Unit, modifier: Modifier = Modif
         ) { Text("Tap again") }
     } else {
         OutlinedButton(onClick = { armed = true }, modifier = modifier) { Text(label) }
+    }
+}
+
+/** Swipe either way to delete (no dialog). */
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+fun SwipeToDelete(onDelete: () -> Unit, content: @Composable () -> Unit) {
+    val state = rememberSwipeToDismissBoxState(confirmValueChange = {
+        if (it != SwipeToDismissBoxValue.Settled) onDelete()
+        it != SwipeToDismissBoxValue.Settled
+    })
+    SwipeToDismissBox(
+        state = state,
+        backgroundContent = {
+            val alignment = if (state.dismissDirection == SwipeToDismissBoxValue.StartToEnd) Alignment.CenterStart else Alignment.CenterEnd
+            Box(
+                Modifier.fillMaxSize().background(MaterialTheme.colorScheme.errorContainer, RoundedCornerShape(6.dp)).padding(horizontal = 16.dp),
+                contentAlignment = alignment,
+            ) { Text("Delete", color = MaterialTheme.colorScheme.onErrorContainer, fontSize = 14.sp) }
+        },
+    ) { content() }
+}
+
+/** Full-screen date picker; kept out of scrolling containers so the year grid gets bounded height. */
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+fun DatePickScreen(title: String, initial: LocalDate?, onPick: (LocalDate) -> Unit, onCancel: () -> Unit) {
+    val state = rememberDatePickerState(
+        initialSelectedDateMillis = initial?.atStartOfDay(ZoneOffset.UTC)?.toInstant()?.toEpochMilli(),
+    )
+    Column(Modifier.fillMaxSize().padding(horizontal = 8.dp)) {
+        MiniTopBar(title, onCancel) {
+            TextButton(
+                onClick = {
+                    state.selectedDateMillis?.let { onPick(Instant.ofEpochMilli(it).atZone(ZoneOffset.UTC).toLocalDate()) }
+                },
+                enabled = state.selectedDateMillis != null,
+            ) { Text("Save") }
+        }
+        DatePicker(state = state, modifier = Modifier.weight(1f), title = null)
     }
 }
