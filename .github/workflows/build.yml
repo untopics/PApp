@@ -28,6 +28,8 @@ jobs:
             exit 1
           fi
           echo "MINIHUB_KEYSTORE_FILE=$RUNNER_TEMP/release.jks" >> "$GITHUB_ENV"
+      - name: Unit tests
+        run: gradle :app:testDebugUnitTest
       - name: Build release APK
         env:
           MINIHUB_KEYSTORE_PASSWORD: ${{ secrets.MINIHUB_KEYSTORE_PASSWORD }}

@@ -102,23 +102,33 @@ object TraditionsApp : MiniApp {
 }
 
 private val locale: Locale get() = Locale.getDefault()
-private val ShortDate = DateTimeFormatter.ofPattern("EEE d MMM", Locale.getDefault())
-private val LongDate = DateTimeFormatter.ofPattern("EEEE, d MMMM yyyy", Locale.getDefault())
-private val DayMonth = DateTimeFormatter.ofPattern("d MMMM", Locale.getDefault())
-private val RowDate = DateTimeFormatter.ofPattern("d MMM yyyy", Locale.getDefault())
+internal val ShortDate = DateTimeFormatter.ofPattern("EEE d MMM", Locale.getDefault())
+internal val LongDate = DateTimeFormatter.ofPattern("EEEE, d MMMM yyyy", Locale.getDefault())
+internal val DayMonth = DateTimeFormatter.ofPattern("d MMMM", Locale.getDefault())
+internal val RowDate = DateTimeFormatter.ofPattern("d MMM yyyy", Locale.getDefault())
 private val MonthYear = DateTimeFormatter.ofPattern("MMMM yyyy", Locale.getDefault())
 
-private const val NEW_ENTRY = "new"
+internal const val NEW = "new"
+
+/** Screen stack; routes are "kind/arg/arg…" strings so they survive in saved state. */
+internal class Nav(val push: (String) -> Unit, val pop: () -> Unit, val replace: (String) -> Unit)
 
 @Composable
 private fun TraditionsScreen(repo: TraditionsRepo, onBack: () -> Unit) {
     val today = rememberToday()
     var tab by rememberSaveable { mutableStateOf(0) }
-    var openKey by rememberSaveable { mutableStateOf<String?>(null) }
-    var editingId by rememberSaveable { mutableStateOf<String?>(null) }
+    // Back stack, newline-separated routes (see Nav).
+    var navState by rememberSaveable { mutableStateOf("") }
+    val stack = navState.split('\n').filter { it.isNotEmpty() }
+    val nav = Nav(
+        push = { r -> navState = (stack + r).joinToString("\n") },
+        pop = { navState = stack.dropLast(1).joinToString("\n") },
+        replace = { r -> navState = (stack.dropLast(1) + r).joinToString("\n") },
+    )
     // Hoisted so the lists keep their scroll position while a detail or form replaces them.
     val calendarState = rememberLazyListState(initialFirstVisibleItemIndex = calendarMonthIndex(today))
     val upcomingState = rememberLazyListState()
+    val peopleState = rememberLazyListState()
     var importResult by remember { mutableStateOf<ImportResult?>(null) }
     var importError by remember { mutableStateOf<String?>(null) }
     val resolver = LocalContext.current.contentResolver
@@ -129,65 +139,100 @@ private fun TraditionsScreen(repo: TraditionsRepo, onBack: () -> Unit) {
         else importResult = BirthdaysCsv.parse(BirthdaysCsv.decode(bytes))
     }
 
-    // Re-derived whenever entries, overrides or the optional toggle change (all snapshot state).
+    // Re-derived whenever entries, persons, overrides or the optional toggle change (all snapshot state).
     val snapshot = repo.snapshot()
     val planner = remember(snapshot) { snapshot.planner() }
+    // Gifts and todos of past events get flagged used.
+    LaunchedEffect(today, planner) { repo.settle(today) }
 
-    val editing = editingId
-    val key = openKey
+    val route = stack.lastOrNull()
     val result = importResult
-    when {
-        result != null -> {
-            BackHandler { importResult = null }
-            ImportScreen(result, repo.entries, onImport = {
-                repo.import(it)
-                importResult = null
-                editingId = null
-            }, onCancel = { importResult = null })
-        }
-        editing != null -> {
-            BackHandler { editingId = null }
-            EntryForm(
-                existing = repo.entries.firstOrNull { it.id == editing },
-                importError = importError,
-                onSave = { cat, name, date, yearKnown ->
-                    repo.upsert(editing.takeIf { it != NEW_ENTRY }, cat, name, date, yearKnown)
-                    editingId = null
-                },
-                onImport = {
-                    importError = null
-                    pickFile.launch(arrayOf("*/*"))
-                },
-                onCancel = { editingId = null },
-            )
-        }
-        key != null -> {
-            BackHandler { openKey = null }
-            val occ = remember(planner, key) {
-                planner.occurrences(today.minusYears(2), today.plusYears(3)).firstOrNull { it.key == key }
-            }
-            if (occ == null) {
-                LaunchedEffect(key) { openKey = null }
-            } else {
-                DetailScreen(
-                    occ, planner, today, repo,
-                    onEdit = { editingId = it },
-                    onClose = { openKey = null },
-                )
-            }
-        }
-        else -> Column(Modifier.fillMaxSize().padding(horizontal = 16.dp)) {
+    if (result != null) {
+        BackHandler { importResult = null }
+        ImportScreen(result, repo.entries, repo.persons, onImport = {
+            repo.import(it)
+            importResult = null
+            nav.pop()
+        }, onCancel = { importResult = null })
+        return
+    }
+    if (route == null) {
+        Column(Modifier.fillMaxSize().padding(horizontal = 16.dp)) {
             MiniTopBar("Traditions", onBack) {
-                TextButton(onClick = { repo.toggleOptional() }) {
+                if (tab != 2) TextButton(onClick = { repo.toggleOptional() }) {
                     Text(if (repo.showOptional) "All" else "Main")
                 }
-                TextButton(onClick = { editingId = NEW_ENTRY }) { Text("+", fontSize = 24.sp) }
+                TextButton(onClick = { nav.push(if (tab == 2) "personForm/$NEW" else "entry/$NEW") }) { Text("+", fontSize = 24.sp) }
             }
-            ChoiceRow(listOf(0, 1), tab, { if (it == 0) "Calendar" else "Upcoming" }, { tab = it })
+            ChoiceRow(listOf(0, 1, 2), tab, { listOf("Calendar", "Upcoming", "People")[it] }, { tab = it })
             Spacer(Modifier.height(8.dp))
-            if (tab == 0) CalendarList(planner, today, calendarState) { openKey = it }
-            else UpcomingList(planner, today, upcomingState) { openKey = it }
+            when (tab) {
+                0 -> CalendarList(planner, today, calendarState) { nav.push("occ/$it") }
+                1 -> UpcomingList(planner, today, upcomingState) { nav.push("occ/$it") }
+                else -> PeopleList(repo, today, peopleState) { nav.push("person/$it") }
+            }
         }
+        return
+    }
+    BackHandler { nav.pop() }
+    val parts = route.split('/')
+    val arg = parts.getOrElse(1) { "" }
+    when (parts[0]) {
+        "occ" -> {
+            val occ = remember(planner, arg) { planner.find(arg) }
+            if (occ == null) LaunchedEffect(route) { nav.pop() }
+            else DetailScreen(occ, today, repo, nav)
+        }
+        "entry" -> EntryForm(
+            existing = repo.entries.firstOrNull { it.id == arg },
+            importError = importError,
+            onSave = { cat, name, date, yearKnown ->
+                repo.upsertEntry(arg.takeIf { it != NEW }, cat, name, date, yearKnown)
+                nav.pop()
+            },
+            onImport = {
+                importError = null
+                pickFile.launch(arrayOf("*/*"))
+            },
+            onCancel = nav.pop,
+        )
+        "person" -> {
+            val person = repo.person(arg)
+            if (person == null) LaunchedEffect(route) { nav.pop() }
+            else PersonScreen(person, repo, today, nav)
+        }
+        "personForm" -> PersonForm(
+            existing = repo.person(arg),
+            onSave = { name, date, yearKnown ->
+                val id = repo.upsertPerson(arg.takeIf { it != NEW }, name, date, yearKnown)
+                if (arg == NEW) nav.replace("person/$id") else nav.pop()
+            },
+            onCancel = nav.pop,
+        )
+        // item/<personId>/<itemId|new>/<kind>/<eventKey|->
+        "item" -> {
+            val person = repo.person(arg)
+            if (person == null) LaunchedEffect(route) { nav.pop() }
+            else {
+                val itemId = parts.getOrElse(2) { NEW }
+                val kind = ItemKind.byId(parts.getOrElse(3) { "gift" })
+                val event = parts.getOrElse(4) { "-" }.takeIf { it != "-" }?.let { planner.find(it) }
+                ItemForm(person, itemId, kind, event, repo, today, nav)
+            }
+        }
+        "pickPerson" -> {
+            val occ = remember(planner, arg) { planner.find(arg) }
+            if (occ == null) LaunchedEffect(route) { nav.pop() }
+            else PickPersonScreen(occ, repo, nav)
+        }
+        // pickIdeas/<eventKey>/<personId>
+        "pickIdeas" -> {
+            val occ = remember(planner, arg) { planner.find(arg) }
+            val person = repo.person(parts.getOrElse(2) { "" })
+            if (occ == null || person == null) LaunchedEffect(route) { nav.pop() }
+            else PickIdeasScreen(occ, person, repo, nav)
+        }
+        else -> LaunchedEffect(route) { nav.pop() }
     }
 }
 
@@ -311,14 +356,7 @@ private fun UpcomingList(planner: Planner, today: LocalDate, state: LazyListStat
 // ── Details ─────────────────────────────────────────────────────────
 
 @Composable
-private fun DetailScreen(
-    occ: Occurrence,
-    planner: Planner,
-    today: LocalDate,
-    repo: TraditionsRepo,
-    onEdit: (String) -> Unit,
-    onClose: () -> Unit,
-) {
+private fun DetailScreen(occ: Occurrence, today: LocalDate, repo: TraditionsRepo, nav: Nav) {
     var picking by remember(occ.key) { mutableStateOf(false) }
     if (picking) {
         BackHandler { picking = false }
@@ -329,12 +367,12 @@ private fun DetailScreen(
         return
     }
     Column(Modifier.fillMaxSize().padding(horizontal = 16.dp)) {
-        MiniTopBar(occ.name, onClose)
+        MiniTopBar(occ.name, nav.pop)
         Column(Modifier.weight(1f).verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(14.dp)) {
             Column {
                 Text("${occ.date.format(LongDate)} · ${relativeLabel(today, occ.date)}", fontSize = 16.sp)
                 Text(
-                    "${occ.kind.icon} ${occ.kind.label}" + (if (occ.entry == null) " · ${occ.tier.label}" else "") +
+                    "${occ.kind.icon} ${occ.kind.label}" + (if (occ.tradition != null) " · ${occ.tier.label}" else "") +
                         (if (occ.overridden) " · date changed" else ""),
                     fontSize = 13.sp,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
@@ -342,10 +380,11 @@ private fun DetailScreen(
             }
             val t = occ.tradition
             val e = occ.entry
+            val p = occ.person
             if (t != null) {
                 Section("When", t.ruleText)
                 Section("What is done", t.what)
-                val reminders = planner.remindersFor(occ).sortedByDescending { it.daysBefore }
+                val reminders = t.prep.sortedByDescending { it.daysBefore }
                 if (reminders.isNotEmpty()) {
                     Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
                         Label("Prep & reminders")
@@ -363,16 +402,29 @@ private fun DetailScreen(
                     }
                 }
             }
+            if (p != null) {
+                val age = if (p.yearKnown && p.birthDate != null) " · turns ${occ.date.year - p.birthDate.year}" else ""
+                Section("Date of birth", personDate(p) + age)
+                ReminderEditor(p.id, p.reminders != null, p.effectiveReminders(), occ.date, today, repo) { p.reminderText(it) }
+            }
             if (e != null) {
                 Section("Name", e.name)
                 Section(e.category.dateLabel, entryDate(e))
-                EntryReminders(e, occ.date, today, repo)
-                PresentList(e, repo)
+                ReminderEditor(e.id, e.reminders != null, e.effectiveReminders(), occ.date, today, repo) { e.reminderText(it) }
+                if (e.presents.isNotEmpty()) PresentList(e, repo)
+            }
+            EventPeople(occ, repo, nav)
+            if (p != null) {
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    OutlinedButton(onClick = { onEdit(e.id) }) { Text("Edit") }
+                    OutlinedButton(onClick = { nav.push("person/${p.id}") }) { Text("Open ${p.name}") }
+                }
+            }
+            if (e != null) {
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    OutlinedButton(onClick = { nav.push("entry/${e.id}") }) { Text("Edit") }
                     ArmedButton("Delete", onConfirm = {
-                        repo.delete(e.id)
-                        onClose()
+                        repo.deleteEntry(e.id)
+                        nav.pop()
                     })
                 }
             }
@@ -381,31 +433,15 @@ private fun DetailScreen(
     }
 }
 
-// ── Present ideas: tap = strike through, swipe = delete ────────────
+// ── Legacy present ideas: tap = strike through, swipe = delete ─────
 
+/** Legacy present ideas on anniversary entries (v1); new ideas live on people. */
 @Composable
 private fun PresentList(entry: UserEntry, repo: TraditionsRepo) {
-    var draft by rememberSaveable(entry.id) { mutableStateOf("") }
-    val add = {
-        repo.addPresent(entry.id, draft)
-        draft = ""
-    }
     Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
-        Label("Present ideas")
+        Label("Present ideas (old)")
         for (p in entry.presents) {
             key(p.id) { PresentRow(p, onToggle = { repo.togglePresent(entry.id, p.id) }, onDelete = { repo.deletePresent(entry.id, p.id) }) }
-        }
-        Row(verticalAlignment = Alignment.CenterVertically) {
-            OutlinedTextField(
-                value = draft,
-                onValueChange = { draft = it },
-                placeholder = { Text("Add an idea") },
-                singleLine = true,
-                keyboardOptions = KeyboardOptions(capitalization = KeyboardCapitalization.Sentences, imeAction = ImeAction.Done),
-                keyboardActions = KeyboardActions(onDone = { add() }),
-                modifier = Modifier.weight(1f),
-            )
-            TextButton(onClick = add, enabled = draft.isNotBlank()) { Text("+", fontSize = 24.sp) }
         }
     }
 }
@@ -429,13 +465,21 @@ private fun PresentRow(p: Present, onToggle: () -> Unit, onDelete: () -> Unit) {
 // ── Reminders per entry: defaults until edited, swipe = delete ──────
 
 @Composable
-private fun EntryReminders(e: UserEntry, date: LocalDate, today: LocalDate, repo: TraditionsRepo) {
-    var days by rememberSaveable(e.id) { mutableStateOf("") }
-    var note by rememberSaveable(e.id) { mutableStateOf("") }
+internal fun ReminderEditor(
+    ownerId: String,
+    edited: Boolean,
+    list: List<EntryReminder>,
+    date: LocalDate,
+    today: LocalDate,
+    repo: TraditionsRepo,
+    text: (EntryReminder) -> String,
+) {
+    var days by rememberSaveable(ownerId) { mutableStateOf("") }
+    var note by rememberSaveable(ownerId) { mutableStateOf("") }
     val dayCount = days.toIntOrNull()?.takeIf { it in 0..MAX_REMINDER_DAYS }
     val add = {
         if (dayCount != null) {
-            repo.addReminder(e.id, dayCount, note)
+            repo.addReminder(ownerId, dayCount, note)
             days = ""
             note = ""
         }
@@ -444,15 +488,15 @@ private fun EntryReminders(e: UserEntry, date: LocalDate, today: LocalDate, repo
         Row(verticalAlignment = Alignment.CenterVertically) {
             Label("Reminders")
             Spacer(Modifier.weight(1f))
-            if (e.reminders != null) TextButton(onClick = { repo.resetReminders(e.id) }) { Text("Use defaults") }
+            if (edited) TextButton(onClick = { repo.resetReminders(ownerId) }) { Text("Use defaults") }
         }
-        val list = e.effectiveReminders().sortedByDescending { it.daysBefore }
-        if (list.isEmpty()) Text("No reminders", fontSize = 14.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
-        for (r in list) {
+        val sorted = list.sortedByDescending { it.daysBefore }
+        if (sorted.isEmpty()) Text("No reminders", fontSize = 14.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+        for (r in sorted) {
             key(r.daysBefore, r.note) {
-                SwipeToDelete({ repo.deleteReminder(e.id, r) }) {
+                SwipeToDelete({ repo.deleteReminder(ownerId, r) }) {
                     Box(Modifier.fillMaxWidth().background(MaterialTheme.colorScheme.surface).padding(vertical = 8.dp, horizontal = 4.dp)) {
-                        ReminderLine(date, r.daysBefore, e.reminderText(r), today)
+                        ReminderLine(date, r.daysBefore, text(r), today)
                     }
                 }
             }
@@ -482,7 +526,7 @@ private fun EntryReminders(e: UserEntry, date: LocalDate, today: LocalDate, repo
 }
 
 @Composable
-private fun ReminderLine(date: LocalDate, daysBefore: Int, text: String, today: LocalDate) {
+internal fun ReminderLine(date: LocalDate, daysBefore: Int, text: String, today: LocalDate) {
     val fire = date.minusDays(daysBefore.toLong())
     val past = fire.isBefore(today)
     Row {
@@ -502,12 +546,12 @@ private fun ReminderLine(date: LocalDate, daysBefore: Int, text: String, today: 
 }
 
 @Composable
-private fun Label(text: String) {
+internal fun Label(text: String) {
     Text(text, style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.primary)
 }
 
 @Composable
-private fun Section(title: String, body: String) {
+internal fun Section(title: String, body: String) {
     Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
         Label(title)
         Text(body, fontSize = 15.sp)
@@ -541,8 +585,13 @@ private fun EntryForm(
 
     Column(Modifier.fillMaxSize().padding(horizontal = 16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
         MiniTopBar(if (existing == null) "New entry" else "Edit entry", onCancel)
-        Label("Category")
-        ChoiceRow(Category.entries.toList(), category, { "${it.kind.icon} ${it.label}" }, { category = it })
+        if (existing == null) {
+            Label("Category")
+            ChoiceRow(Category.entries.toList(), category, { "${it.kind.icon} ${it.label}" }, { category = it })
+            if (category == Category.BIRTHDAY) {
+                Text("Saved as a person — add gift ideas and todos under People.", fontSize = 13.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            }
+        }
         OutlinedTextField(
             value = name,
             onValueChange = { name = it },
@@ -573,11 +622,16 @@ private fun EntryForm(
 private fun entryDate(e: UserEntry): String =
     if (e.yearKnown) e.date.format(LongDate) else e.date.format(DayMonth) + " · year unknown"
 
+internal fun personDate(p: Person): String {
+    val b = p.birthDate ?: return "—"
+    return if (p.yearKnown) b.format(LongDate) else b.format(DayMonth) + " · year unknown"
+}
+
 // ── Import preview ──────────────────────────────────────────────────
 
 @Composable
-private fun ImportScreen(result: ImportResult, existing: List<UserEntry>, onImport: (List<ImportRow>) -> Unit, onCancel: () -> Unit) {
-    val fresh = remember(result, existing.toList()) { BirthdaysCsv.newRows(result.rows, existing).toSet() }
+private fun ImportScreen(result: ImportResult, existing: List<UserEntry>, persons: List<Person>, onImport: (List<ImportRow>) -> Unit, onCancel: () -> Unit) {
+    val fresh = remember(result, existing.toList(), persons.toList()) { BirthdaysCsv.newRows(result.rows, existing, persons).toSet() }
     val dupes = result.rows.size - fresh.size
     Column(Modifier.fillMaxSize().padding(horizontal = 16.dp)) {
         MiniTopBar("Import Birthdays", onCancel)

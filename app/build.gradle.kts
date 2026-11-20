@@ -54,4 +54,7 @@ dependencies {
     implementation("androidx.compose.material3:material3")
     implementation("androidx.lifecycle:lifecycle-runtime-compose:2.8.7")
     implementation(project(":controls"))
+
+    testImplementation("junit:junit:4.13.2")
+    testImplementation("org.json:json:20240303") // real org.json; android.jar only has stubs
 }

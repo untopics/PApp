@@ -56,9 +56,13 @@ object BirthdaysCsv {
         return ImportResult(rows, bad)
     }
 
-    /** Rows not yet in [existing] (same kind, name and day), without repeats inside the file. */
-    fun newRows(rows: List<ImportRow>, existing: List<UserEntry>): List<ImportRow> {
+    /** Rows not yet in [existing] or [persons] (same kind, name and day), without repeats inside the file. */
+    fun newRows(rows: List<ImportRow>, existing: List<UserEntry>, persons: List<Person> = emptyList()): List<ImportRow> {
         val seen = existing.map { sameKey(it.category, it.name, it.date.monthValue, it.date.dayOfMonth) }.toHashSet()
+        for (p in persons) {
+            val b = p.birthDate ?: continue
+            seen += sameKey(Category.BIRTHDAY, p.name, b.monthValue, b.dayOfMonth)
+        }
         return rows.filter { seen.add(sameKey(it.category, it.name, it.month, it.day)) }
     }
 
